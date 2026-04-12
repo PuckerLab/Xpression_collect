@@ -13,6 +13,6 @@ Repository with scripts for data fetching from SRA and other downstream analyses
 
 **transeq.py**: script to translate CDS sequences to PEP
 
-**isoform_purger.py**: script to obtain CDS with primary transcript file, PEP with primary transscript file, and expression file with only primary transcripts
+**isoform_purge_wrapper.py**: script to obtain CDS file, PEP file, and expression file with only primary transcripts
 
 
