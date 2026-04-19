@@ -1,6 +1,10 @@
 # Xpression_collect
 Repository with scripts for data fetching from SRA and other downstream analyses to obtain comprehensive gene expression database
 
+<p align="center">
+<img width="600" alt="xpression_collect drawio(1)" src="https://github.com/user-attachments/assets/aa647d2b-a4db-416d-868c-c257ce05a163" />
+</p>
+
 **kallisto_pipeline3.py**: wrapper script to run kallisto 
 
 **merge_kallisto_ouput3.py**: script to merge kallisto output files
