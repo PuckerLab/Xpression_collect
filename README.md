@@ -3,6 +3,7 @@
 # Xpression_collector - an end-to-end pipeline for RNA-seq data processing
 
 Xpression_collector is a simple Python-based pipeline for fetching RNA-seq reads from SRA and processing them to get the expression TPM files for further downstream analyses. It can also work with locally fetched SRA folders already existing in the user's system, circumventing the fetching step as needed. Following are the salient features of the pipeline:
+
 -> Optional BUSCO analysis of the PEP file obtained from the input CDS file
 
 -> Reattempting capability to handle network disruptions during SRA prefetch and fasterq-dump
