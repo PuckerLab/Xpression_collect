@@ -45,7 +45,7 @@ docker pull shakunthalan/xpression_collector:latest
 It is recommended to run the docker image as a user and not root:
 
 ```
- docker run --rm -u $(id -u) -v /path/to/data:/data shakunthalan/xpression_collector:latest
+ docker run --rm -u $(id -u) -v /path/to/data:/vol/data shakunthalan/xpression_collector:latest
 ```
 
 **Note:** If you are using a docker image of the tool, you need not specify the dependencies' full paths while running the tool; The dependencies are built-in in the docker image and that makes it simple to use the tool across systems without the need for local installations.
