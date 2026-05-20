@@ -75,58 +75,60 @@ python3 Xpression_collector.py --cds <CDS_FILE>
                                --out <OUTPUT_DIR>
 MANDATORY:
 
---cds            STR     Full path to CDS file
+--cds                  STR     Full path to CDS file
 
 Either provide a list of SRA accessions to fetch or path to already available main folder with subfolders named according to the samples/ accessions
 
---sra            STR     Full path to TXT file with one SRA accession per line
+--sra                  STR     Full path to TXT file with one SRA accession per line
 
---readfiles      STR     Full path to folder with SRA accession subfolders each containing FASTQ files
+--readfiles            STR     Full path to folder with SRA accession subfolders each containing FASTQ files
 
---out            STR     Full path to output directory
+--out                  STR     Full path to output directory
 
 
 OPTIONAL:
 
---uncompressed   STR     Provide this flag if your read files are uncompressed
+--uncompressed         STR     Provide this flag if your read files are uncompressed
 
---annotation_qc  STR     yes or no for BUSCO-based QC of the PEP file; default is yes
+--annotation_qc        STR     yes or no for BUSCO-based QC of the PEP file; default is yes
 
---threads        STR     Total number of cores for running the pipeline; default is 4
+--threads              STR     Total number of cores for running the pipeline; default is 4
 
---batch_size     STR     Number od SRA accessions to be fetched per batch; default is 1
+--batch_size           STR     Number od SRA accessions to be fetched per batch; default is 1
 
---attempts       STR     Number of attempts at prefetching and accession from SRA; default is just 1 attempt
+--attempts             STR     Number of attempts at prefetching and accession from SRA; default is just 1 attempt
 
---wait           STR     Base wait time for sleep in case of network delays for prefetch; Increases exponentially with a base of 2 for each reattempt; default is 20 seconds
+--wait                 STR     Base wait time for sleep in case of network delays for prefetch; Increases exponentially
+                               with a base of 2 for each reattempt; default is 20 seconds
 
---remove_isoforms  STR   Optional step to remove isoforms; yes or no; default is yes
+--remove_isoforms      STR   Optional step to remove isoforms; yes or no; default is yes
 
---min              INT   Minimum percentage expression of top 100 genes
+--min                  INT   Minimum percentage expression of top 100 genes
 
---max              INT   Maximum percentage expression of top 100 genes
+--max                  INT   Maximum percentage expression of top 100 genes
 
---black            STR   SRA IDs to be removed or blacklisted in a TXT file with one SRA accession ID per line
+--black                STR   SRA IDs to be removed or blacklisted in a TXT file with one SRA accession ID per line
 
---scorecut         INT   BLAST bit score cutoff for isoform purging; default is 100
+--scorecut             INT   BLAST bit score cutoff for isoform purging; default is 100
 
---simcut           INT   BLAST similarity cutoff for isoform purging; default is 99.0
+--simcut               INT   BLAST similarity cutoff for isoform purging; default is 99.0
 
---lencut           INT   Length cutoff for isoform purging; default is 100
+--lencut               INT   Length cutoff for isoform purging; default is 100
 
---snvcut           INT   Number of single nucleotide variants allowed between two nucleotide sequences to group them as isoforms or not; default is 5
+--snvcut               INT   Number of single nucleotide variants allowed between two nucleotide sequences to group them as isoforms or not; default is 5
 
---blast            STR   Full path to BLAST aligner
+--blast                STR   Full path to BLAST aligner
 
---eval             STR   evalue cutoff for self BLAST used in isoform purging; default is 1e-10
+--eval                 STR   evalue cutoff for self BLAST used in isoform purging; default is 1e-10
 
---mafft          STR    Full path to MAFFT
+--mafft                STR    Full path to MAFFT
 
---busco          STR    Full path to BUSCO; Specify busco_docker if BUSCO is installed via docker
+--busco                STR    Full path to BUSCO; Specify busco_docker if BUSCO is installed via docker
 
---busco_lineage  STR    Full path to the config file to specify the BUSCO lineage> <Tab separated TXT file with sample name (should be the same as sample_name) in the first column and BUSCO lineage in the second column
+--busco_lineage        STR    Full path to the config file to specify the BUSCO lineage> <Tab separated TXT file with sample name
+                              (should be the same assample_name) in the first column and BUSCO lineage in the second column
 
---busco_version  STR    Version of BUSCO> default is v6.0.0
+--busco_version        STR    Version of BUSCO> default is v6.0.0
 
 --container_version    STR    Container version of the BUSCO docker image
 
@@ -140,7 +142,7 @@ OPTIONAL:
 
 --prefetch             STR    Full path to the prefetch executable
 
---fasterq-dump         STR Full path to the fasterq-dump executable
+--fasterq-dump         STR    Full path to the fasterq-dump executable
 
 ```
 
