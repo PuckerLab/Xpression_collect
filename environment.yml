@@ -1,0 +1,21 @@
+name: xpression_collector
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+dependencies:
+  # Core Python
+  - python=3.12.7
+  
+  # Python libraries
+  - pandas
+  - matplotlib
+  - pyfiglet #optional
+  
+  # External tools
+  - blast
+  - mafft
+  - kallisto
+  - busco
+  - sra-tools
+
