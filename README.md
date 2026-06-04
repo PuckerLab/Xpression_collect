@@ -128,7 +128,7 @@ OPTIONAL:
 --busco                STR    Full path to BUSCO; Specify busco_docker if BUSCO is installed via docker
 
 --busco_lineage        STR    Full path to the config file to specify the BUSCO lineage> <Tab separated TXT file with sample name
-                              (should be the same assample_name) in the first column and BUSCO lineage in the second column
+                              (should be the same as sample_name) in the first column and BUSCO lineage in the second column
 
 --busco_version        STR    Version of BUSCO> default is v6.0.0
 
