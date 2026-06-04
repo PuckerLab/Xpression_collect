@@ -94,7 +94,7 @@ OPTIONAL:
 
 --threads              STR     Total number of cores for running the pipeline; default is 4
 
---batch_size           STR     Number od SRA accessions to be fetched per batch; default is 1
+--batch_size           STR     Number of SRA accessions to be fetched per batch; default is 1
 
 --attempts             STR     Number of attempts at prefetching and accession from SRA; default is just 1 attempt
 
