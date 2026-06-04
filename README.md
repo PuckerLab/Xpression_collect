@@ -88,6 +88,8 @@ Either provide a list of SRA accessions to fetch or path to already available ma
 
 OPTIONAL:
 
+--sample_name          STR     Name of the species <default is sample>
+
 --uncompressed         STR     Provide this flag if your read files are uncompressed
 
 --annotation_qc        STR     yes or no for BUSCO-based QC of the PEP file; default is yes
