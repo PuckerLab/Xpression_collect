@@ -88,7 +88,7 @@ Either provide a list of SRA accessions to fetch or path to already available ma
 
 OPTIONAL:
 
---sample_name          STR     Name of the species <default is sample>
+--sample_name          STR     Name of the species; default is sample
 
 --uncompressed         STR     Provide this flag if your read files are uncompressed
 
