@@ -1,7 +1,7 @@
 ### Shakunthala Natarajan ###
 ### bug reports: s64snata@uni-bonn.de ###
 
-__version__=0.1
+__version__=0.15
 __usage__="""
 			python3 Xpression_collector.py
 			--cds <Full path to CDS file>
@@ -266,15 +266,6 @@ def clean_headers_for_busco(gene_id):
 
 #function to run BUSCO
 def run_busco(logger, orgname, fasta_file, busco_path, busco_dir, busco_dir_final, busco_threads_per_organism, org_type,host_cache_dir, busco_db_dir, buscolineage):
-	#code to extract lineages to use from busco lineage config file
-	buscolineage_dic={}
-	if buscolineage!='auto':
-		with open (buscolineage,'r')as f:
-			line=f.readline()
-			while line:
-				parts=line.strip().split()
-				buscolineage_dic[parts[0]]=parts[1].strip()
-				line=f.readline()
 	#code to create a temp CDS fasta file to clean headers and use this clean protein file for busco analysis - this temp file will be deleted after the busco run completes
 	tmp_fasta = os.path.join(busco_dir, f"{orgname}_temp.cds.fasta")
 	try:
@@ -290,23 +281,14 @@ def run_busco(logger, orgname, fasta_file, busco_path, busco_dir, busco_dir_fina
 			if buscolineage=='auto':
 				cmd = busco_path + ' -i ' + tmp_fasta + ' -m proteins --auto-lineage-euk -q -o ' + orgname + ' -c ' + busco_threads_per_organism + ' --out_path ' + busco_dir + ' --download_path ' + busco_db_dir
 			else:
-				if orgname in buscolineage_dic.keys():
-					lineage=buscolineage_dic[orgname]
-					cmd = busco_path + ' -i ' + tmp_fasta + ' -m proteins -l '+ lineage + ' -q -o ' + orgname + ' -c ' + busco_threads_per_organism + ' --out_path ' + busco_dir + ' --download_path ' + busco_db_dir
-				else:
-					logger.info(f"BUSCO lineage not specified for {orgname}. Reverting back to auto lineage detection.")
-					cmd = busco_path + ' -i ' + tmp_fasta + ' -m proteins --auto-lineage-euk -q -o ' + orgname + ' -c ' + busco_threads_per_organism + ' --out_path ' + busco_dir + ' --download_path ' + busco_db_dir
+				lineage=buscolineage
+				cmd = busco_path + ' -i ' + tmp_fasta + ' -m proteins -l '+ lineage + ' -q -o ' + orgname + ' -c ' + busco_threads_per_organism + ' --out_path ' + busco_dir + ' --download_path ' + busco_db_dir
 		elif org_type == 'prokaryote':
 			if buscolineage=='auto':
 				cmd = busco_path + ' -i ' + tmp_fasta + ' -m proteins --auto-lineage-prok -q -o ' + orgname + ' -c ' + busco_threads_per_organism + ' --out_path ' + busco_dir + ' --download_path ' + busco_db_dir
 			else:
-				if orgname in buscolineage_dic.keys():
-					lineage=buscolineage_dic[orgname]
-					cmd = busco_path + ' -i ' + tmp_fasta + ' -m proteins -l ' + lineage + ' -q -o ' + orgname + ' -c ' + busco_threads_per_organism + ' --out_path ' + busco_dir + ' --download_path ' + busco_db_dir
-				else:
-					logger.info(f"BUSCO lineage not specified for {orgname}. Reverting back to auto lineage detection.")
-					cmd = busco_path + ' -i ' + tmp_fasta + ' -m proteins --auto-lineage-prok -q -o ' + orgname + ' -c ' + busco_threads_per_organism + ' --out_path ' + busco_dir + ' --download_path ' + busco_db_dir
-
+				lineage=buscolineage
+				cmd = busco_path + ' -i ' + tmp_fasta + ' -m proteins -l ' + lineage + ' -q -o ' + orgname + ' -c ' + busco_threads_per_organism + ' --out_path ' + busco_dir + ' --download_path ' + busco_db_dir
 		p = subprocess.Popen(args=cmd, shell=True)
 		p.communicate()
 	finally:
