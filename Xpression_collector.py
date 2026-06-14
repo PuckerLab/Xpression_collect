@@ -1211,54 +1211,71 @@ def main(arguments):
 					if os.path.exists(acc_dir):
 						shutil.rmtree(acc_dir)
 					os.makedirs(acc_dir, exist_ok=True)
-					cmd = f"{prefetch_command} --max-size 200G {accession} -O {sradir}"
-					prefetch_result = subprocess.run(cmd, shell=True)
-					# fasterq-dump + pigz
-					prefetched_file = os.path.join(acc_dir,f"{accession}.sra")
-					# fasterq-dump
-					cmd = f"{fasterq_dump} --split-3 --outdir {acc_dir} --skip-technical --threads {cores} {prefetched_file}"
-					fasterq_dump_result = subprocess.run(cmd, shell=True)
+					prefetched_file = os.path.join(acc_dir, f"{accession}.sra")
+					try:
+						cmd = f"{prefetch_command} --max-size 200G {accession} -O {sradir}"
+						prefetch_result = subprocess.run(cmd, shell=True)
+						if prefetch_result.returncode != 0:#if prefetch fails due to issues lik network disruption
+							raise RuntimeError(f"prefetch for {accession} failed with code {prefetch_result.returncode}")
+						if not os.path.exists(prefetched_file):#if prefetch did not fetch an SRA file in the first place
+							raise RuntimeError(f"prefetch for {accession} did not fetch a .sra file")
+						filesize = os.path.getsize(prefetched_file)
+						if filesize < minimum_sra_file_size_threshold:#in case prefetch gets the sralite files
+							raise RuntimeError(f"File size of the prefetched file for {accession} is smaller than the threshold size of {minimum_sra_file_size_threshold}")
 
-					# pigz (generalized)
-					fq_patterns = [
-						os.path.join(acc_dir, f"{accession}*.fastq"),
-						os.path.join(acc_dir, f"{accession}*.fq"),
-					]
-					fq_files = []
-					for pattern in fq_patterns:
-						fq_files.extend(glob.glob(pattern))
-					pigz_result = None
-					if fq_files:
-						cmd = f"pigz -p {cores} " + " ".join(fq_files)
-						pigz_result = subprocess.run(cmd, shell=True)
-					# After pigz, check what was created
-					logger.info(f"Files in {acc_dir}:")
-					all_valid = False
-					for f in os.listdir(acc_dir):
-						logger.info(f"  {f}")
-					gz_files = glob.glob(os.path.join(acc_dir, "*.gz"))
-					all_valid = gz_files and all(os.path.getsize(f) > 0 for f in gz_files)#checks for all fetched gzipped file sizes and if all are non-empty
-					if all_valid:
-						if prefetch_result.returncode ==0 and fasterq_dump_result.returncode ==0 and pigz_result is not None and pigz_result.returncode ==0:
-							with open(completed_accessions_file, 'a') as out:
+						# fasterq-dump
+						cmd = f"{fasterq_dump} --split-3 --outdir {acc_dir} --skip-technical --threads {cores} {prefetched_file}"
+						fasterq_dump_result = subprocess.run(cmd, shell=True)
+						if fasterq_dump_result.returncode !=0:
+							raise RuntimeError(f"fasterq-dump failed for {accession} with error code {fasterq_dump_result.returncode}")
+
+						# pigz (generalized)
+						fq_patterns = [
+							os.path.join(acc_dir, f"{accession}*.fastq"),
+							os.path.join(acc_dir, f"{accession}*.fq"),
+						]
+						fq_files = []
+						for pattern in fq_patterns:
+							fq_files.extend(glob.glob(pattern))
+						pigz_result = None
+						if fq_files:
+							cmd = f"pigz -p {cores} " + " ".join(fq_files)
+							pigz_result = subprocess.run(cmd, shell=True)
+							if pigz_result.returncode != 0:
+								raise RuntimeError(f"pigz failed with code {pigz_result.returncode}")
+							# After pigz, check what was created
+							logger.info(f"Files in {acc_dir}:")
+							all_valid = False
+							for f in os.listdir(acc_dir):
+								logger.info(f"  {f}")
+						gz_files = glob.glob(os.path.join(acc_dir, "*.gz"))
+						all_valid = gz_files and all(os.path.getsize(f) > 0 for f in gz_files)#checks for all fetched gzipped file sizes and if all are non-empty
+						if not all_valid:
+							raise RuntimeError(f"gz files missing or empty for {accession}")
+						#if fetching is successful mark as completed accession and break out of the retry loop
+						with open(completed_accessions_file, 'a') as out:
+							out.write(f'{accession}\n')
+							out.flush()
+							os.fsync(out.fileno())
+						completed_accessions.add(accession)
+						break
+					except RuntimeError as e:
+						logger.warning(f"Attempt {attempt + 1} failed for {accession}: {e}")
+						# clean up partial files before retrying
+						if os.path.exists(acc_dir):
+							shutil.rmtree(acc_dir)
+							os.makedirs(acc_dir, exist_ok=True)
+						if attempt < attempts - 1:
+							wait = base_wait * (2 ** attempt)
+							logger.info(f"Retrying {accession} in {wait}s")
+							time.sleep(wait)
+						else:
+							logger.error(f"All attempts exhausted for {accession}, marking as failed")
+							with open(failed_accessions_file, 'a') as out:
 								out.write(f'{accession}\n')
 								out.flush()
 								os.fsync(out.fileno())
-								completed_accessions.add(accession)
-								break
-					if attempt < (attempts -1):
-						wait = base_wait*(2**attempt)#exponentially increasing wait time
-						time.sleep(wait)
-				if accession not in completed_accessions:
-					if os.path.exists(prefetched_file):
-						os.remove(prefetched_file)
-					with open(failed_accessions_file, 'a') as out:
-						out.write(f'{accession}\n')
-						out.flush()
-						os.fsync(out.fileno())
-					continue#move to the next accession
-				if os.path.exists(prefetched_file):
-					os.remove(prefetched_file)
+
 		elif '--readfiles' in arguments:
 			#creating a temp folder containing symlinks to the subfolders in the specific batch
 			tmp_dir_obj = tempfile.TemporaryDirectory(dir=outdir)#creating tmp_dir to store symlinks in the output folder specified by the user
