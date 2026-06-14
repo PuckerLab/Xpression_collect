@@ -1,7 +1,7 @@
 ### Shakunthala Natarajan ###
 ### bug reports: s64snata@uni-bonn.de ###
 
-__version__=0.15
+__version__=0.1
 __usage__="""
 			python3 Xpression_collector.py
 			--cds <Full path to CDS file>
@@ -14,7 +14,10 @@ __usage__="""
 			--batch_size <Number od SRA accessions to be fetched per batch> default is 1
 			--attempts <Number of attempts at prefetching and accession from SRA> default is just 1 attempt
 			--wait <Base wait time for sleep in case of network delays for prefetch; Increases exponentially with a base of 2 for each reattempt> default is 20 seconds
+			--min_sra_file_size <Minimum file size cutoff in MB to check prefetched SRA file sizes to cath sralite files that might cause downstream errors> default cutoff is 1MB
 			--remove_isoforms <Optional step to remove isoforms>< yes or no> default is yes
+			--merge_tpms <Full path to config file containing the full paths to the filtered_tpm, and/or repr_filtered_tpms to be merged>
+						 <First column will have paths to filtered_tpm files one per line; Second column will have paths to filtered_repr_tpm files one per line>
 			--min <Minimum percentage expression of top 100 genes>
 			--max <Maximum percentage expression of top 100 genes>
 			--black <SRA IDs to be removed or blacklisted in a TXT file with one SRA accession ID per line>
@@ -26,7 +29,7 @@ __usage__="""
 			--eval <evalue cutoff for self BLAST used in isoform purging> default is 1e-10
 			--mafft <Full path to MAFFT>
 			--busco <Full path to BUSCO> <Specify busco_docker if BUSCO is installed via docker>
-			--busco_lineage <Full path to the config file to specify the BUSCO lineage> <Tab separated TXT file with sample name (should be the same as sample_name) in the first column and BUSCO lineage in the second column>
+			--busco_lineage <Specify the BUSCO lineage> default is auto
 			--busco_version <Version of BUSCO> default is v6.0.0
 			--container_version <Container version of the BUSCO docker image>
 			--docker_host_path <Host path to be mounted on for running the docker image>
@@ -47,9 +50,12 @@ import copy
 import logging
 import shutil
 import pandas as pd
+from functools import reduce
 from pathlib import Path
 from collections import Counter, OrderedDict
 import matplotlib.pyplot as plt
+from threading import Thread
+from queue import Queue
 from operator import itemgetter
 try:
 	from pyfiglet import Figlet
@@ -58,6 +64,9 @@ try:
 except ImportError:
 	pass
 ### --- end of imports --- ###
+
+fetch_queue = Queue()
+barrier = None
 
 #global definition of dictionary with problematic characters for dendropy processing, busco processing and their respective placeholders
 replacements = {
@@ -815,27 +824,213 @@ def identify_repr_isoform_per_group(logger, isoforms, seqs):
 	"""! @brief identify representative isoform per group """
 
 	repr_seq_collection = {}
+	repr_id_collection = {}
 	for group in isoforms:
 		tmp_seqs = []
 		for ID in group:
 			tmp_seqs.append({'ID': ID, 'seq': seqs[ID], 'len': len(seqs[ID])})
 		sorted_list = sorted(tmp_seqs, key=itemgetter('len'))
 		repr_seq_collection.update({sorted_list[-1]['ID']: sorted_list[-1]['seq']})
-	return repr_seq_collection
+		repr_id_collection.update({sorted_list[-1]['ID']: sorted_list[:-1]['ID']})#make a dictionary where key is the repr isoform and the value is a list of all isoforms in the group represented by this isoform
+	return repr_seq_collection, repr_id_collection
 
 #function to produce TPM file without isoforms
-def keep_primary_transcript_exp(repr_tpm_file, repr_counts_file, primary_transcript_cds_file, exp_file):
+def keep_primary_transcript_exp(repr_ids, repr_tpm_file, repr_counts_file, primary_transcript_cds_file, exp_file):
 	primary_transcripts = []
 	with open (primary_transcript_cds_file, 'r') as f:
 		for line in f:
 			if line.startswith(">"):
 				primary_transcripts.append(line[1:].strip())
-	df = pd.read_csv(exp_file, sep='\t')
-	filtered_df = df[df['gene'].isin(primary_transcripts)]
+
+	df = pd.read_csv(exp_file, sep='\t', index_col='gene')
+	original_transcript_order = df.index.tolist()#obtaining the transcript order from the original file
+
+	result_rows = []
+	all_mapped_transcripts = set()#to collect transcripts from the isoform representative collection
+	for retained_transcript, purged_transcripts in repr_ids.items():#collect transcripts to be purged for summing up their expression values onto the retained primary transcript
+		transcripts_to_sum = [retained_transcript]+purged_transcripts
+		all_mapped_transcripts.add(transcripts_to_sum)
+
+		summed_up_row = df.loc[transcripts_to_sum].sum()
+		summed_up_row.name = retained_transcript
+		result_rows.append(summed_up_row)
+
+	df_summed = pd.DataFrame(result_rows)
+	df_summed.index.name = 'gene'
+
+	df_unmapped = df[~df.index.isin(all_mapped_transcripts)]#dataframe with transcripts not found in the repr_ids dic mapping
+
+	df_total = pd.concat([df_summed, df_unmapped])
+	df_total = df_total.reset.index()
+	#preserving original transcript order in the isoform purged file
+	retained_order = [t for t in original_transcript_order if t in df_total['gene'].values]
+	df_total = df_total.set_index('gene').loc[retained_order].reset_index()
+
 	if '.tpm' in exp_file:
-		filtered_df.to_csv(repr_tpm_file, sep="\t", index=False)
+		df_total.to_csv(repr_tpm_file, sep="\t", index=False)
 	elif '.count' in exp_file:
-		filtered_df.to_csv(repr_counts_file, sep="\t", index=False)
+		df_total.to_csv(repr_counts_file, sep="\t", index=False)
+
+	return repr_tpm_file
+
+#function to fetch SRA files
+def fetch_worker (attempts,sradir, accession,prefetch_command, minimum_sra_file_size_threshold, fasterq_dump, cores, logger, completed_accessions_file, base_wait, failed_accessions_file):
+	for attempt in range(attempts):
+		# Create subfolder for this accession
+		acc_dir = os.path.join(sradir, accession)
+		if os.path.exists(acc_dir):
+			shutil.rmtree(acc_dir)
+		os.makedirs(acc_dir, exist_ok=True)
+		prefetched_file = os.path.join(acc_dir, f"{accession}.sra")
+		try:
+			cmd = f"{prefetch_command} --max-size 200G {accession} -O {sradir}"
+			prefetch_result = subprocess.run(cmd, shell=True)
+			if prefetch_result.returncode != 0:  # if prefetch fails due to issues lik network disruption
+				raise RuntimeError(f"prefetch for {accession} failed with code {prefetch_result.returncode}")
+			if not os.path.exists(prefetched_file):  # if prefetch did not fetch an SRA file in the first place
+				raise RuntimeError(f"prefetch for {accession} did not fetch a .sra file")
+			filesize = (os.path.getsize(prefetched_file))/(1024 ** 2)#converting the file size returned in bytes by getsize to Mb
+			if filesize < minimum_sra_file_size_threshold:  # in case prefetch gets the sralite files
+				raise RuntimeError(
+					f"File size of the prefetched file for {accession} is smaller than the threshold size of {minimum_sra_file_size_threshold}")
+
+			# fasterq-dump
+			cmd = f"{fasterq_dump} --split-3 --outdir {acc_dir} --skip-technical --threads {cores} {prefetched_file}"
+			fasterq_dump_result = subprocess.run(cmd, shell=True)
+			if fasterq_dump_result.returncode != 0:
+				raise RuntimeError(
+					f"fasterq-dump failed for {accession} with error code {fasterq_dump_result.returncode}")
+
+			# pigz (generalized)
+			fq_patterns = [
+				os.path.join(acc_dir, f"{accession}*.fastq"),
+				os.path.join(acc_dir, f"{accession}*.fq"),
+			]
+			fq_files = []
+			for pattern in fq_patterns:
+				fq_files.extend(glob.glob(pattern))
+			pigz_result = None
+			if fq_files:
+				cmd = f"pigz -p {cores} " + " ".join(fq_files)
+				pigz_result = subprocess.run(cmd, shell=True)
+				if pigz_result.returncode != 0:
+					raise RuntimeError(f"pigz failed with code {pigz_result.returncode}")
+				# After pigz, check what was created
+				logger.info(f"Files in {acc_dir}:")
+				all_valid = False
+				for f in os.listdir(acc_dir):
+					logger.info(f"  {f}")
+			gz_files = glob.glob(os.path.join(acc_dir, "*.gz"))
+			all_valid = gz_files and all(os.path.getsize(f) > 0 for f in gz_files)  # checks for all fetched gzipped file sizes and if all are non-empty
+			if not all_valid:
+				raise RuntimeError(f"gz files missing or empty for {accession}")
+			# if fetching is successful mark as completed accession and break out of the retry loop
+			with open(completed_accessions_file, 'a') as out:
+				out.write(f'{accession}\n')
+				out.flush()
+				os.fsync(out.fileno())
+			successfull_accession = accession
+			fetch_queue.put(successfull_accession)
+			break
+		except RuntimeError as e:
+			logger.warning(f"Attempt {attempt + 1} failed for {accession}: {e}")
+			# clean up partial files before retrying
+			if os.path.exists(acc_dir):
+				shutil.rmtree(acc_dir)
+				os.makedirs(acc_dir, exist_ok=True)
+			if attempt < attempts - 1:
+				wait = base_wait * (2 ** attempt)
+				logger.info(f"Retrying {accession} in {wait}s")
+				time.sleep(wait)
+			else:
+				logger.error(f"All attempts exhausted for {accession}, marking as failed")
+				with open(failed_accessions_file, 'a') as out:
+					out.write(f'{accession}\n')
+					out.flush()
+					os.fsync(out.fileno())
+
+#function to perform kallisto quantification as soon as SRA file is fetched
+def kallisto_worker(sradir,readfile_status, logger,kallistodir,kallisto,cds_file,cores,tmpdir):
+	while True:
+		accession = fetch_queue.get()
+		if accession is barrier:
+			break
+		# Run Kallisto
+		# --- load data --- #
+		single_read_file_folders = [x[0] for x in os.walk(sradir, followlinks=True)][1:]
+		logger.info("Number of FASTQ file folders detected: " + str(len(single_read_file_folders)) + "\n")
+
+		# --- prepare jobs to run --- #
+		index_file = os.path.join(tmpdir, "index")
+		jobs_to_run = get_data_for_jobs_to_run(readfile_status, logger, single_read_file_folders, kallistodir, index_file,tmpdir)
+		logger.info("Number of jobs to run: " + str(len(jobs_to_run)) + "\n")
+
+		# --- generate index --- #
+		if not os.path.isfile(index_file):
+			logger.info("Starting Kallisto indexing and quantification per batch")
+			cmd1 = " ".join([kallisto, "index", "--index=" + index_file, "--make-unique", cds_file])
+			p = subprocess.Popen(args=cmd1, shell=True)
+			p.communicate()
+
+		# --- run jobs --- #
+		job_executer(logger, jobs_to_run, kallisto, cores)
+		fetch_queue.task_done()
+
+#function to check if tsv files for merge have the same genes in the same order in the first column
+def check_gene_consistency(file_paths):
+	gene_lists = {}
+	for f in file_paths:
+		genes = pd.read_csv(f, sep='\t', usecols=['gene'])['gene'].tolist()
+		gene_lists[f] = genes
+
+	base_file = file_paths[0]
+	base_genes = gene_lists[base_file]
+
+	errors = []
+	for f in file_paths[1:]:
+		other_genes = gene_lists[f]
+
+		if base_genes == other_genes:
+			continue  # identical names and order, no issue
+
+		# collect errors
+		if set(base_genes) == set(other_genes):
+			# Same genes but wrong order — find first mismatch position
+			mismatches = [(i, base_genes[i], other_genes[i])
+						  for i in range(len(base_genes))
+						  if base_genes[i] != other_genes[i]]
+			errors.append(
+				f"\nFile: {f}"
+				f"\nGene names match but order differs."
+				f"\nFirst mismatch at row {mismatches[0][0]+1}: "
+				f"Expected '{mismatches[0][1]}', found '{mismatches[0][2]}'"
+				f" ({len(mismatches)} mismatched positions total)"
+			)
+		else:
+			# Different gene sets entirely
+			only_in_base = set(base_genes) - set(other_genes)
+			only_in_other = set(other_genes) - set(base_genes)
+			errors.append(
+				f"\nFile: {f}"
+				+ (f"\nGenes only in {base_file}: {only_in_base}" if only_in_base else "")
+				+ (f"\nGenes only in {f}: {only_in_other}" if only_in_other else "")
+			)
+
+	if errors:
+		return False, "Gene mismatch detected:" + "".join(errors)
+	return True, None
+
+def merge_expression_tsvs(base_file, additional_files):
+	all_files = [base_file] + additional_files
+
+	# --- Validate before merging ---
+	is_consistent, error_msg = check_gene_consistency(all_files)
+	if not is_consistent:
+		raise ValueError(error_msg)
+
+	dfs = [pd.read_csv(f, sep='\t', index_col='gene') for f in all_files]
+	merged = reduce(lambda left, right: left.join(right, how='inner'), dfs)
+	return merged.reset_index()
 
 def main(arguments):
 	if '--sample_name' in arguments:
@@ -1055,6 +1250,25 @@ def main(arguments):
 	else:
 		readfile_status = 'gz'
 
+	if '--min_sra_file_size' in arguments:#enter file size in Mb; default is 1 Mb
+		minimum_sra_file_size_threshold = int(arguments[arguments.index('--min_sra_file_size')+1])
+	else:
+		minimum_sra_file_size_threshold = 1
+
+	merge_filtered_tpm= []
+	merge_filtered_repr_tpm = []
+	if '--merge_tpms' in arguments:#full path to config file containing the full paths to the filtered_tpm, and/or repr_filtered_tpms to be merged; first column will have paths to filtered_tpm files one per line; second column will have paths to filtered_repr_tpm files one per line
+		tpm_config = arguments[arguments.index('--merge_tpms')+1]
+		with open (tpm_config, 'r') as f:
+			line = f.readline()
+			while line:
+				parts = line.strip().split('\t')
+				merge_filtered_tpm.append(parts[0])
+				if len(parts)>1:
+					merge_filtered_repr_tpm.append(parts[1])
+				line=f.readline()
+
+
 	logger.info("Welcome to Xpression_collector!")
 
 	#code block to obtain PEP file from CDS file
@@ -1183,8 +1397,8 @@ def main(arguments):
 
 	#code block to record completed accessions to tackle internet and network disruption interruptions
 	completed_accessions = set()
-	completed_accessions_file = os.path.join(tmpdir,'Fetch_completed_accession.txt')
-	failed_accessions_file = os.path.join(tmpdir,'Fetch_failed_accession.txt')
+	completed_accessions_file = os.path.join(outdir,'Fetch_completed_accession.txt')
+	failed_accessions_file = os.path.join(outdir,'Fetch_failed_accession.txt')
 	if os.path.exists(completed_accessions_file):
 		with open (completed_accessions_file, 'r') as f:
 			completed_accessions = set(line.strip() for line in f)
@@ -1202,79 +1416,21 @@ def main(arguments):
 		sra_accessions = sra_accessions[batch_size:]  # consume N
 		logger.info(f"Processing batch {batch_counter} ({len(batch)} SRAs)")
 
+		# Create Kallisto dir
+		kallistodir = os.path.join(outdir, f'Kallisto_run_{batch_counter}')
+		os.makedirs(kallistodir, exist_ok=True)
+		if kallistodir[-1] != "/":
+			kallistodir += "/"
+
 		if '--sra' in arguments:
-			# prefetch
+			# start kallisto consumer thread first
+			kt = Thread(target=kallisto_worker, args=(sradir,readfile_status, logger,kallistodir,kallisto,cds_file,cores,tmpdir))
+			kt.start()
 			for accession in batch:
-				for attempt in range(attempts):
-					# Create subfolder for this accession
-					acc_dir = os.path.join(sradir, accession)
-					if os.path.exists(acc_dir):
-						shutil.rmtree(acc_dir)
-					os.makedirs(acc_dir, exist_ok=True)
-					prefetched_file = os.path.join(acc_dir, f"{accession}.sra")
-					try:
-						cmd = f"{prefetch_command} --max-size 200G {accession} -O {sradir}"
-						prefetch_result = subprocess.run(cmd, shell=True)
-						if prefetch_result.returncode != 0:#if prefetch fails due to issues lik network disruption
-							raise RuntimeError(f"prefetch for {accession} failed with code {prefetch_result.returncode}")
-						if not os.path.exists(prefetched_file):#if prefetch did not fetch an SRA file in the first place
-							raise RuntimeError(f"prefetch for {accession} did not fetch a .sra file")
-						filesize = os.path.getsize(prefetched_file)
-						if filesize < minimum_sra_file_size_threshold:#in case prefetch gets the sralite files
-							raise RuntimeError(f"File size of the prefetched file for {accession} is smaller than the threshold size of {minimum_sra_file_size_threshold}")
-
-						# fasterq-dump
-						cmd = f"{fasterq_dump} --split-3 --outdir {acc_dir} --skip-technical --threads {cores} {prefetched_file}"
-						fasterq_dump_result = subprocess.run(cmd, shell=True)
-						if fasterq_dump_result.returncode !=0:
-							raise RuntimeError(f"fasterq-dump failed for {accession} with error code {fasterq_dump_result.returncode}")
-
-						# pigz (generalized)
-						fq_patterns = [
-							os.path.join(acc_dir, f"{accession}*.fastq"),
-							os.path.join(acc_dir, f"{accession}*.fq"),
-						]
-						fq_files = []
-						for pattern in fq_patterns:
-							fq_files.extend(glob.glob(pattern))
-						pigz_result = None
-						if fq_files:
-							cmd = f"pigz -p {cores} " + " ".join(fq_files)
-							pigz_result = subprocess.run(cmd, shell=True)
-							if pigz_result.returncode != 0:
-								raise RuntimeError(f"pigz failed with code {pigz_result.returncode}")
-							# After pigz, check what was created
-							logger.info(f"Files in {acc_dir}:")
-							all_valid = False
-							for f in os.listdir(acc_dir):
-								logger.info(f"  {f}")
-						gz_files = glob.glob(os.path.join(acc_dir, "*.gz"))
-						all_valid = gz_files and all(os.path.getsize(f) > 0 for f in gz_files)#checks for all fetched gzipped file sizes and if all are non-empty
-						if not all_valid:
-							raise RuntimeError(f"gz files missing or empty for {accession}")
-						#if fetching is successful mark as completed accession and break out of the retry loop
-						with open(completed_accessions_file, 'a') as out:
-							out.write(f'{accession}\n')
-							out.flush()
-							os.fsync(out.fileno())
-						completed_accessions.add(accession)
-						break
-					except RuntimeError as e:
-						logger.warning(f"Attempt {attempt + 1} failed for {accession}: {e}")
-						# clean up partial files before retrying
-						if os.path.exists(acc_dir):
-							shutil.rmtree(acc_dir)
-							os.makedirs(acc_dir, exist_ok=True)
-						if attempt < attempts - 1:
-							wait = base_wait * (2 ** attempt)
-							logger.info(f"Retrying {accession} in {wait}s")
-							time.sleep(wait)
-						else:
-							logger.error(f"All attempts exhausted for {accession}, marking as failed")
-							with open(failed_accessions_file, 'a') as out:
-								out.write(f'{accession}\n')
-								out.flush()
-								os.fsync(out.fileno())
+				fetch_worker(attempts, sradir, accession, prefetch_command, minimum_sra_file_size_threshold,fasterq_dump, cores, logger, completed_accessions_file, base_wait, failed_accessions_file)
+			# signal consumer that no more accessions are coming
+			fetch_queue.put(barrier)
+			kt.join()
 
 		elif '--readfiles' in arguments:
 			#creating a temp folder containing symlinks to the subfolders in the specific batch
@@ -1284,32 +1440,25 @@ def main(arguments):
 				symlink = tmp_path / subfolder.name
 				symlink.symlink_to(subfolder.resolve())
 			sradir = tmp_path
+			# Run Kallisto
+			# --- load data --- #
+			single_read_file_folders = [x[0] for x in os.walk(sradir, followlinks=True)][1:]
+			logger.info("Number of FASTQ file folders detected: " + str(len(single_read_file_folders)) + "\n")
 
-		# Create Kallisto dir
-		kallistodir = os.path.join(outdir, f'Kallisto_run_{batch_counter}')
-		os.makedirs(kallistodir, exist_ok=True)
-		if kallistodir[-1] != "/":
-			kallistodir += "/"
+			# --- prepare jobs to run --- #
+			index_file = os.path.join(tmpdir, "index")
+			jobs_to_run = get_data_for_jobs_to_run(readfile_status, logger, single_read_file_folders, kallistodir, index_file, tmpdir)
+			logger.info("Number of jobs to run: " + str(len(jobs_to_run)) + "\n")
 
-		# Run Kallisto
-		# --- load data --- #
-		single_read_file_folders = [x[0] for x in os.walk(sradir, followlinks=True)][1:]
-		logger.info("Number of FASTQ file folders detected: " + str(len(single_read_file_folders)) + "\n")
+			# --- generate index --- #
+			if not os.path.isfile(index_file):
+				logger.info("Starting Kallisto indexing and quantification per batch")
+				cmd1 = " ".join([kallisto, "index", "--index=" + index_file, "--make-unique", cds_file])
+				p = subprocess.Popen(args=cmd1, shell=True)
+				p.communicate()
 
-		# --- prepare jobs to run --- #
-		index_file = os.path.join(tmpdir, "index")
-		jobs_to_run = get_data_for_jobs_to_run(readfile_status, logger, single_read_file_folders, kallistodir, index_file, tmpdir)
-		logger.info("Number of jobs to run: " + str(len(jobs_to_run)) + "\n")
-
-		# --- generate index --- #
-		if not os.path.isfile(index_file):
-			logger.info("Starting Kallisto indexing and quantification per batch")
-			cmd1 = " ".join([kallisto, "index", "--index=" + index_file, "--make-unique", cds_file])
-			p = subprocess.Popen(args=cmd1, shell=True)
-			p.communicate()
-
-		# --- run jobs --- #
-		job_executer(logger, jobs_to_run, kallisto, cores)
+			# --- run jobs --- #
+			job_executer(logger, jobs_to_run, kallisto, cores)
 
 		# Merge the TPM, Counts numbers of SRA samples in a batch into a single TPM, Counts file respectively
 		tpmfile = os.path.join(kallistofinaldir, f"TPM_{batch_counter}.txt")
@@ -1599,7 +1748,7 @@ def main(arguments):
 			# --- classify sequences as isoforms/paralogs --- #
 			isoforms = identify_isoforms(alignment_results, snv_cutoff)
 			logger.info("number of isoform groups: " + str(len(isoforms)))
-			repr_isoforms = identify_repr_isoform_per_group(logger, isoforms, seqs)
+			repr_isoforms, repr_ids = identify_repr_isoform_per_group(logger, isoforms, seqs)
 			blacklist = {}
 			for ID in [x for sublist in isoforms for x in sublist]:
 				blacklist.update({ID: None})
@@ -1644,9 +1793,32 @@ def main(arguments):
 				translate_file(logger, in_file, pep_file, genetic_code, internal_stop_to_x=internal_stop_to_x)
 
 			#code block to produce TPM file without alternative isoforms
-			keep_primary_transcript_exp(repr_tpm_file, repr_counts_file, isoform_reduced_cds_file, filtered_tpm_file)
+			repr_tpm_filtered = keep_primary_transcript_exp(repr_ids, repr_tpm_file, repr_counts_file, isoform_reduced_cds_file, filtered_tpm_file)
 			logger.info(f'Xpression_collector pipeline completed successfully!!!')
 
+	# code block to merge filtered TPM file produced in this run with already existing filtered TPM files
+	try:
+		timestr = time.strftime("%Y_%m_%d_")
+		merged_filtered_tpm_file = os.path.join(outdir, f'{timestr}_{orgname}_merged.tpms.tsv')
+		merged_filtered_repr_tpm_file = os.path.join(outdir, f'{timestr}_{orgname}_merged_repr.tpms.tsv')
+	except ModuleNotFoundError:
+		merged_filtered_tpm_file = os.path.join(outdir, f'{orgname}_merged.tpms.tsv')
+		merged_filtered_repr_tpm_file = os.path.join(outdir, f'{orgname}_merged_repr.tpms.tsv')
+
+	if merge_filtered_tpm:
+		try:
+			merged_df = merge_expression_tsvs(filtered_tpm_file, merge_filtered_tpm)
+			merged_df.to_csv(merged_filtered_tpm_file, sep='\t', index=False)
+			print(f"Merge successful: {merged_df.shape[0]} genes x {merged_df.shape[1]} columns")
+		except ValueError as e:
+			print(f"Aborting merge:\n{e}")
+	if merge_filtered_repr_tpm and remove_isoforms == 'yes':
+		try:
+			merged_df = merge_expression_tsvs(repr_tpm_filtered, merge_filtered_repr_tpm)
+			merged_df.to_csv(merged_filtered_repr_tpm_file, sep='\t', index=False)
+			print(f"Merge successful: {merged_df.shape[0]} genes x {merged_df.shape[1]} columns")
+		except ValueError as e:
+			print(f"Aborting merge:\n{e}")
 
 if '--sra' in sys.argv and '--cds' in sys.argv and '--out' in sys.argv:
 	main(sys.argv)
