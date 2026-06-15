@@ -826,12 +826,18 @@ def identify_repr_isoform_per_group(logger, isoforms, seqs):
 	repr_seq_collection = {}
 	repr_id_collection = {}
 	for group in isoforms:
+		#debug lines
+		if any('TC00001' in id for id in group):
+			print(f'isoform group is {group}')
 		tmp_seqs = []
 		for ID in group:
 			tmp_seqs.append({'ID': ID, 'seq': seqs[ID], 'len': len(seqs[ID])})
 		sorted_list = sorted(tmp_seqs, key=itemgetter('len'))
 		repr_seq_collection.update({sorted_list[-1]['ID']: sorted_list[-1]['seq']})
-		repr_id_collection.update({sorted_list[-1]['ID']: sorted_list[:-1]['ID']})#make a dictionary where key is the repr isoform and the value is a list of all isoforms in the group represented by this isoform
+		ID_values=[]
+		for element in sorted_list[:-1]:
+			ID_values.append(element['ID'])
+		repr_id_collection.update({sorted_list[-1]['ID']: ID_values})#make a dictionary where key is the repr isoform and the value is a list of all isoforms in the group represented by this isoform
 	return repr_seq_collection, repr_id_collection
 
 #function to produce TPM file without isoforms
@@ -849,7 +855,7 @@ def keep_primary_transcript_exp(repr_ids, repr_tpm_file, repr_counts_file, prima
 	all_mapped_transcripts = set()#to collect transcripts from the isoform representative collection
 	for retained_transcript, purged_transcripts in repr_ids.items():#collect transcripts to be purged for summing up their expression values onto the retained primary transcript
 		transcripts_to_sum = [retained_transcript]+purged_transcripts
-		all_mapped_transcripts.add(transcripts_to_sum)
+		all_mapped_transcripts.update(transcripts_to_sum)
 
 		summed_up_row = df.loc[transcripts_to_sum].sum()
 		summed_up_row.name = retained_transcript
@@ -861,7 +867,7 @@ def keep_primary_transcript_exp(repr_ids, repr_tpm_file, repr_counts_file, prima
 	df_unmapped = df[~df.index.isin(all_mapped_transcripts)]#dataframe with transcripts not found in the repr_ids dic mapping
 
 	df_total = pd.concat([df_summed, df_unmapped])
-	df_total = df_total.reset.index()
+	df_total = df_total.reset_index()
 	#preserving original transcript order in the isoform purged file
 	retained_order = [t for t in original_transcript_order if t in df_total['gene'].values]
 	df_total = df_total.set_index('gene').loc[retained_order].reset_index()
@@ -950,27 +956,20 @@ def fetch_worker (attempts,sradir, accession,prefetch_command, minimum_sra_file_
 					os.fsync(out.fileno())
 
 #function to perform kallisto quantification as soon as SRA file is fetched
-def kallisto_worker(sradir,readfile_status, logger,kallistodir,kallisto,cds_file,cores,tmpdir):
+def kallisto_worker(index_file, sradir,readfile_status, logger,kallistodir,kallisto,cds_file,cores,tmpdir):
 	while True:
 		accession = fetch_queue.get()
 		if accession is barrier:
 			break
 		# Run Kallisto
 		# --- load data --- #
-		single_read_file_folders = [x[0] for x in os.walk(sradir, followlinks=True)][1:]
+		acc_dir = os.path.join(sradir, accession)
+		single_read_file_folders = [acc_dir]
 		logger.info("Number of FASTQ file folders detected: " + str(len(single_read_file_folders)) + "\n")
 
 		# --- prepare jobs to run --- #
-		index_file = os.path.join(tmpdir, "index")
 		jobs_to_run = get_data_for_jobs_to_run(readfile_status, logger, single_read_file_folders, kallistodir, index_file,tmpdir)
 		logger.info("Number of jobs to run: " + str(len(jobs_to_run)) + "\n")
-
-		# --- generate index --- #
-		if not os.path.isfile(index_file):
-			logger.info("Starting Kallisto indexing and quantification per batch")
-			cmd1 = " ".join([kallisto, "index", "--index=" + index_file, "--make-unique", cds_file])
-			p = subprocess.Popen(args=cmd1, shell=True)
-			p.communicate()
 
 		# --- run jobs --- #
 		job_executer(logger, jobs_to_run, kallisto, cores)
@@ -1421,10 +1420,17 @@ def main(arguments):
 		os.makedirs(kallistodir, exist_ok=True)
 		if kallistodir[-1] != "/":
 			kallistodir += "/"
+		#create kallisto index file
+		index_file = os.path.join(tmpdir, "index")
+		if not os.path.isfile(index_file):
+			logger.info("Starting Kallisto indexing")
+			cmd1 = " ".join([kallisto, "index", "--index=" + index_file, "--make-unique", cds_file])
+			p = subprocess.Popen(args=cmd1, shell=True)
+			p.communicate()
 
 		if '--sra' in arguments:
 			# start kallisto consumer thread first
-			kt = Thread(target=kallisto_worker, args=(sradir,readfile_status, logger,kallistodir,kallisto,cds_file,cores,tmpdir))
+			kt = Thread(target=kallisto_worker, args=(index_file,sradir,readfile_status, logger,kallistodir,kallisto,cds_file,cores,tmpdir))
 			kt.start()
 			for accession in batch:
 				fetch_worker(attempts, sradir, accession, prefetch_command, minimum_sra_file_size_threshold,fasterq_dump, cores, logger, completed_accessions_file, base_wait, failed_accessions_file)
