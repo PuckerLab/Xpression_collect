@@ -1,3 +1,4 @@
+
 <img width="524" height="252" alt="xpression_collector_logo" src="https://github.com/user-attachments/assets/ba8bb939-0c83-4724-a82f-524acdb64910" />
 
 # Xpression_collector - an end-to-end pipeline for RNA-seq data processing
@@ -17,6 +18,20 @@ Xpression_collector is a simple Python-based pipeline for fetching RNA-seq reads
 -> Removal of invalid RNA-seq samples
 
 -> Optional removal of isoforms
+
+<h2>📢 News & Updates</h2>
+
+-> **v0.15 is out and is the latest stable release!**
+
+-> **v0.15 updates include**:
+
+  -> buscolineage flag option entry has been simplified
+  
+  -> SRA file fetching and kallisto runs take place in an interleaved manner saving processing time as batch size and total sample size increase
+  
+  -> Better error handling and network issue tolerant fall backs in SRA file fetching
+  
+  -> You can now merge already exisiting TPM/ repr_TPM files with the ones produced in the current run of Xpression_collector
 
 ## Workflow
 
