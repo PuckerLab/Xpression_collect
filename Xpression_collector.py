@@ -1408,64 +1408,110 @@ def main(arguments):
 	# Clear failed accessions file at start of each run
 	with open(failed_accessions_file, 'w') as f:
 		pass
-	if '--sra' in arguments:
-		sra_accessions = [acc for acc in load_IDs(todo_sras) if acc not in completed_accessions]
-	elif '--readfiles' in arguments:
-		todo_sras_path = Path(todo_sras)
-		sra_accessions = [f for f in todo_sras_path.iterdir() if f.is_dir() and f.name not in completed_accessions]#list of immediate subfolders with FASTQ read files
+	sra_accessions = [acc for acc in load_IDs(todo_sras) if acc not in completed_accessions]
+
+	# create kallisto index file
+	index_file = os.path.join(tmpdir, "index")
+	if not os.path.isfile(index_file):
+		logger.info("Starting Kallisto indexing")
+		cmd1 = " ".join([kallisto, "index", "--index=" + index_file, "--make-unique", cds_file])
+		p = subprocess.Popen(args=cmd1, shell=True)
+		p.communicate()
 	batch_counter = 1
 	while sra_accessions:
 		batch = sra_accessions[:batch_size]  # take first N
 		sra_accessions = sra_accessions[batch_size:]  # consume N
 		logger.info(f"Processing batch {batch_counter} ({len(batch)} SRAs)")
 
-		# Create Kallisto dir
-		kallistodir = os.path.join(outdir, f'Kallisto_run_{batch_counter}')
-		os.makedirs(kallistodir, exist_ok=True)
-		if kallistodir[-1] != "/":
-			kallistodir += "/"
-		#create kallisto index file
-		index_file = os.path.join(tmpdir, "index")
-		if not os.path.isfile(index_file):
-			logger.info("Starting Kallisto indexing")
-			cmd1 = " ".join([kallisto, "index", "--index=" + index_file, "--make-unique", cds_file])
-			p = subprocess.Popen(args=cmd1, shell=True)
-			p.communicate()
+		for accession in batch:
+			for attempt in range(attempts):
+				# Create subfolder for this accession
+				acc_dir = os.path.join(sradir, accession)
+				if os.path.exists(acc_dir):
+					shutil.rmtree(acc_dir)
+				os.makedirs(acc_dir, exist_ok=True)
+				prefetched_file = os.path.join(acc_dir, f"{accession}.sra")
+				try:
+					cmd = f"{prefetch_command} --max-size 200G {accession} -O {sradir}"
+					prefetch_result = subprocess.run(cmd, shell=True)
+					if prefetch_result.returncode != 0:  # if prefetch fails due to issues lik network disruption
+						raise RuntimeError(
+							f"prefetch for {accession} failed with code {prefetch_result.returncode}")
+					if not os.path.exists(
+							prefetched_file):  # if prefetch did not fetch an SRA file in the first place
+						raise RuntimeError(f"prefetch for {accession} did not fetch a .sra file")
+					filesize = (os.path.getsize(prefetched_file)) / (
+								1024 ** 2)  # converting the file size returned in bytes by getsize to Mb
+					if filesize < minimum_sra_file_size_threshold:  # in case prefetch gets the sralite files
+						raise RuntimeError(
+							f"File size of the prefetched file for {accession} is smaller than the threshold size of {minimum_sra_file_size_threshold}")
 
-		if '--sra' in arguments:
-			# start kallisto consumer thread first
-			kt = Thread(target=kallisto_worker, args=(index_file,sradir,readfile_status, logger,kallistodir,kallisto,cds_file,cores,tmpdir))
-			kt.start()
-			for accession in batch:
-				fetch_worker(attempts, sradir, accession, prefetch_command, minimum_sra_file_size_threshold,fasterq_dump, cores, logger, completed_accessions_file, base_wait, failed_accessions_file)
-			# signal consumer that no more accessions are coming
-			fetch_queue.put(barrier)
-			kt.join()
+					# fasterq-dump
+					cmd = f"{fasterq_dump} --split-3 --outdir {acc_dir} --skip-technical --threads {cores} {prefetched_file}"
+					fasterq_dump_result = subprocess.run(cmd, shell=True)
+					if fasterq_dump_result.returncode != 0:
+						raise RuntimeError(
+							f"fasterq-dump failed for {accession} with error code {fasterq_dump_result.returncode}")
 
-		elif '--readfiles' in arguments:
-			#creating a temp folder containing symlinks to the subfolders in the specific batch
-			tmp_dir_obj = tempfile.TemporaryDirectory(dir=outdir)#creating tmp_dir to store symlinks in the output folder specified by the user
-			tmp_path = Path(tmp_dir_obj.name)
-			for subfolder in batch:
-				symlink = tmp_path / subfolder.name
-				symlink.symlink_to(subfolder.resolve())
-			sradir = tmp_path
-			# Run Kallisto
+					# pigz (generalized)
+					fq_patterns = [
+						os.path.join(acc_dir, f"{accession}*.fastq"),
+						os.path.join(acc_dir, f"{accession}*.fq"),
+					]
+					fq_files = []
+					for pattern in fq_patterns:
+						fq_files.extend(glob.glob(pattern))
+					pigz_result = None
+					if fq_files:
+						cmd = f"pigz -p {cores} " + " ".join(fq_files)
+						pigz_result = subprocess.run(cmd, shell=True)
+						if pigz_result.returncode != 0:
+							raise RuntimeError(f"pigz failed with code {pigz_result.returncode}")
+						# After pigz, check what was created
+						logger.info(f"Files in {acc_dir}:")
+						all_valid = False
+						for f in os.listdir(acc_dir):
+							logger.info(f"  {f}")
+					gz_files = glob.glob(os.path.join(acc_dir, "*.gz"))
+					all_valid = gz_files and all(os.path.getsize(f) > 0 for f in gz_files)  # checks for all fetched gzipped file sizes and if all are non-empty
+					if not all_valid:
+						raise RuntimeError(f"gz files missing or empty for {accession}")
+					# if fetching is successful mark as completed accession and break out of the retry loop
+					with open(completed_accessions_file, 'a') as out:
+						out.write(f'{accession}\n')
+						out.flush()
+						os.fsync(out.fileno())
+				except RuntimeError as e:
+					logger.warning(f"Attempt {attempt + 1} failed for {accession}: {e}")
+					# clean up partial files before retrying
+					if os.path.exists(acc_dir):
+						shutil.rmtree(acc_dir)
+						os.makedirs(acc_dir, exist_ok=True)
+					if attempt < attempts - 1:
+						wait = base_wait * (2 ** attempt)
+						logger.info(f"Retrying {accession} in {wait}s")
+						time.sleep(wait)
+					else:
+						logger.error(f"All attempts exhausted for {accession}, marking as failed")
+						with open(failed_accessions_file, 'a') as out:
+							out.write(f'{accession}\n')
+							out.flush()
+							os.fsync(out.fileno())
+
+			# Create Kallisto dir
+			kallistodir = os.path.join(outdir, f'Kallisto_run_{batch_counter}')
+			os.makedirs(kallistodir, exist_ok=True)
+			if kallistodir[-1] != "/":
+				kallistodir += "/"
+
 			# --- load data --- #
-			single_read_file_folders = [x[0] for x in os.walk(sradir, followlinks=True)][1:]
+			acc_dir = os.path.join(sradir, accession)
+			single_read_file_folders = [acc_dir]
 			logger.info("Number of FASTQ file folders detected: " + str(len(single_read_file_folders)) + "\n")
 
 			# --- prepare jobs to run --- #
-			index_file = os.path.join(tmpdir, "index")
-			jobs_to_run = get_data_for_jobs_to_run(readfile_status, logger, single_read_file_folders, kallistodir, index_file, tmpdir)
+			jobs_to_run = get_data_for_jobs_to_run(readfile_status, logger,single_read_file_folders, kallistodir,index_file, tmpdir)
 			logger.info("Number of jobs to run: " + str(len(jobs_to_run)) + "\n")
-
-			# --- generate index --- #
-			if not os.path.isfile(index_file):
-				logger.info("Starting Kallisto indexing and quantification per batch")
-				cmd1 = " ".join([kallisto, "index", "--index=" + index_file, "--make-unique", cds_file])
-				p = subprocess.Popen(args=cmd1, shell=True)
-				p.communicate()
 
 			# --- run jobs --- #
 			job_executer(logger, jobs_to_run, kallisto, cores)
@@ -1500,8 +1546,6 @@ def main(arguments):
 			os.makedirs(sradir)
 			for subdir in glob.glob(os.path.join(tmpdir, "SRR*")):
 				shutil.rmtree(subdir)
-		elif '--readfiles' in arguments:#removing the temporary folder with symlinks in case user wants to use own RNA-seq data read files
-			tmp_dir_obj.cleanup()
 		batch_counter += 1
 
 	#code lines to merge the TPM/ Counts files
