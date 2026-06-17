@@ -54,6 +54,7 @@ from functools import reduce
 from pathlib import Path
 from collections import Counter, OrderedDict
 import matplotlib.pyplot as plt
+import threading
 from threading import Thread
 from queue import Queue
 from operator import itemgetter
@@ -67,6 +68,7 @@ except ImportError:
 
 fetch_queue = Queue()
 barrier = None
+cpu_semaphore = threading.Semaphore(1)#restricts by allowing only one CPU-bound process to run at  time utilizing all the given cores; safety mechanism to avoid cpu clash between cpu-bound tasks in the queue-thread strategy
 
 #global definition of dictionary with problematic characters for dendropy processing, busco processing and their respective placeholders
 replacements = {
@@ -763,7 +765,7 @@ def load_hits_per_bait(blast_result_file, scorecut, simcut, lencut):
 					if float(parts[2]) > simcut:
 						if int(parts[3]) > lencut:
 							try:
-								if parts[-1] not in hits[parts[0]]:
+								if parts[1] not in hits[parts[0]]:
 									hits[parts[0]].append(parts[1])  # add to existing dictionary entry
 							except KeyError:
 								hits.update({parts[0]: [parts[1]]})  # generate new entry in dictionary
@@ -900,42 +902,43 @@ def fetch_worker (attempts,sradir, accession,prefetch_command, minimum_sra_file_
 				raise RuntimeError(
 					f"File size of the prefetched file for {accession} is smaller than the threshold size of {minimum_sra_file_size_threshold}")
 
-			# fasterq-dump
-			cmd = f"{fasterq_dump} --split-3 --outdir {acc_dir} --skip-technical --threads {cores} {prefetched_file}"
-			fasterq_dump_result = subprocess.run(cmd, shell=True)
-			if fasterq_dump_result.returncode != 0:
-				raise RuntimeError(
-					f"fasterq-dump failed for {accession} with error code {fasterq_dump_result.returncode}")
+			with cpu_semaphore:
+				# fasterq-dump
+				cmd = f"{fasterq_dump} --split-3 --outdir {acc_dir} --skip-technical --threads {cores} {prefetched_file}"
+				fasterq_dump_result = subprocess.run(cmd, shell=True)
+				if fasterq_dump_result.returncode != 0:
+					raise RuntimeError(
+						f"fasterq-dump failed for {accession} with error code {fasterq_dump_result.returncode}")
 
-			# pigz (generalized)
-			fq_patterns = [
-				os.path.join(acc_dir, f"{accession}*.fastq"),
-				os.path.join(acc_dir, f"{accession}*.fq"),
-			]
-			fq_files = []
-			for pattern in fq_patterns:
-				fq_files.extend(glob.glob(pattern))
-			pigz_result = None
-			if fq_files:
-				cmd = f"pigz -p {cores} " + " ".join(fq_files)
-				pigz_result = subprocess.run(cmd, shell=True)
-				if pigz_result.returncode != 0:
-					raise RuntimeError(f"pigz failed with code {pigz_result.returncode}")
-				# After pigz, check what was created
-				logger.info(f"Files in {acc_dir}:")
-				all_valid = False
-				for f in os.listdir(acc_dir):
-					logger.info(f"  {f}")
-			gz_files = glob.glob(os.path.join(acc_dir, "*.gz"))
-			all_valid = gz_files and all(os.path.getsize(f) > 0 for f in gz_files)  # checks for all fetched gzipped file sizes and if all are non-empty
-			if not all_valid:
-				raise RuntimeError(f"gz files missing or empty for {accession}")
-			# if fetching is successful mark as completed accession and break out of the retry loop
-			with open(completed_accessions_file, 'a') as out:
-				out.write(f'{accession}\n')
-				out.flush()
-				os.fsync(out.fileno())
-			successfull_accession = accession
+				# pigz (generalized)
+				fq_patterns = [
+					os.path.join(acc_dir, f"{accession}*.fastq"),
+					os.path.join(acc_dir, f"{accession}*.fq"),
+				]
+				fq_files = []
+				for pattern in fq_patterns:
+					fq_files.extend(glob.glob(pattern))
+				pigz_result = None
+				if fq_files:
+					cmd = f"pigz -p {cores} " + " ".join(fq_files)
+					pigz_result = subprocess.run(cmd, shell=True)
+					if pigz_result.returncode != 0:
+						raise RuntimeError(f"pigz failed with code {pigz_result.returncode}")
+					# After pigz, check what was created
+					logger.info(f"Files in {acc_dir}:")
+					all_valid = False
+					for f in os.listdir(acc_dir):
+						logger.info(f"  {f}")
+				gz_files = glob.glob(os.path.join(acc_dir, "*.gz"))
+				all_valid = gz_files and all(os.path.getsize(f) > 0 for f in gz_files)  # checks for all fetched gzipped file sizes and if all are non-empty
+				if not all_valid:
+					raise RuntimeError(f"gz files missing or empty for {accession}")
+				# if fetching is successful mark as completed accession and break out of the retry loop
+				with open(completed_accessions_file, 'a') as out:
+					out.write(f'{accession}\n')
+					out.flush()
+					os.fsync(out.fileno())
+				successfull_accession = accession
 			fetch_queue.put(successfull_accession)
 			break
 		except RuntimeError as e:
@@ -962,17 +965,18 @@ def kallisto_worker(index_file, sradir,readfile_status, logger,kallistodir,kalli
 		if accession is barrier:
 			break
 		# Run Kallisto
-		# --- load data --- #
-		acc_dir = os.path.join(sradir, accession)
-		single_read_file_folders = [acc_dir]
-		logger.info("Number of FASTQ file folders detected: " + str(len(single_read_file_folders)) + "\n")
+		with cpu_semaphore:
+			# --- load data --- #
+			acc_dir = os.path.join(sradir, accession)
+			single_read_file_folders = [acc_dir]
+			logger.info("Number of FASTQ file folders detected: " + str(len(single_read_file_folders)) + "\n")
 
-		# --- prepare jobs to run --- #
-		jobs_to_run = get_data_for_jobs_to_run(readfile_status, logger, single_read_file_folders, kallistodir, index_file,tmpdir)
-		logger.info("Number of jobs to run: " + str(len(jobs_to_run)) + "\n")
+			# --- prepare jobs to run --- #
+			jobs_to_run = get_data_for_jobs_to_run(readfile_status, logger, single_read_file_folders, kallistodir, index_file,tmpdir)
+			logger.info("Number of jobs to run: " + str(len(jobs_to_run)) + "\n")
 
-		# --- run jobs --- #
-		job_executer(logger, jobs_to_run, kallisto, cores)
+			# --- run jobs --- #
+			job_executer(logger, jobs_to_run, kallisto, cores)
 		fetch_queue.task_done()
 
 #function to check if tsv files for merge have the same genes in the same order in the first column
@@ -1689,16 +1693,17 @@ def main(arguments):
 				for key in list(seqs.keys()):
 					out.write('>' + key + "\n" + seqs[key] + "\n")
 
-			# --- run BLAST/DIAMOND vs self --- #
+			# --- run BLAST vs self --- #
 			dbname = os.path.join(tmpdir, "blastdb")
 			blast_result_file = os.path.join(tmpdir, "blast_results.txt")
-			cmd = f"{makeblastdb} -in " + clean_file + " -out " + dbname + " -dbtype nucl"
-			p = subprocess.Popen(args=cmd, shell=True)
-			p.communicate()
+			if not os.path.exists(blast_result_file):
+				cmd = f"{makeblastdb} -in " + clean_file + " -out " + dbname + " -dbtype nucl"
+				p = subprocess.Popen(args=cmd, shell=True)
+				p.communicate()
 
-			cmd = f"{blastn} -query " + clean_file + " -db " + dbname + " -out " + blast_result_file + " -outfmt 6 -evalue " + str(eval) + " -num_threads " + str(cores)
-			p = subprocess.Popen(args=cmd, shell=True)
-			p.communicate()
+				cmd = f"{blastn} -query " + clean_file + " -db " + dbname + " -out " + blast_result_file + " -outfmt 6 -evalue " + str(eval) + " -num_threads " + str(cores)
+				p = subprocess.Popen(args=cmd, shell=True)
+				p.communicate()
 			"""
 			elif aligner_tool == 'diamond':
 				cmd = diamond + ' makedb --in ' + clean_file + ' --db ' + dbname + ' --quiet '
@@ -1738,7 +1743,7 @@ def main(arguments):
 			fasta_files = glob.glob(single_fasta_folder + "*.fasta")
 			for fasta in fasta_files:
 				if not os.path.isfile(fasta + ".aln"):
-					cmd = f"{mafft} " + fasta + " > " + fasta + ".aln 2> " + fasta + ".doc.txt"
+					cmd = f"{mafft} --thread {cores} " + fasta + " > " + fasta + ".aln 2> " + fasta + ".doc.txt"
 					p = subprocess.Popen(args=cmd, shell=True)
 					p.communicate()
 
