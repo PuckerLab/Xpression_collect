@@ -21,13 +21,13 @@ Xpression_collector is a simple Python-based pipeline for fetching RNA-seq reads
 
 <h2>📢 News & Updates</h2>
 
--> **v0.15 is out and is the latest stable release!**
+-> **v0.2 is out and is the latest stable release!**
 
--> **v0.15 updates include**:
+-> **v0.2 updates include**:
 
   -> buscolineage flag option entry has been simplified
   
-  -> SRA file fetching and kallisto runs take place in an interleaved manner saving processing time as batch size and total sample size increase
+  -> SRA file fetching and kallisto runs take place in an interleaved manner improving processing time
   
   -> Better error handling and network issue tolerant fall backs in SRA file fetching
   
@@ -35,7 +35,8 @@ Xpression_collector is a simple Python-based pipeline for fetching RNA-seq reads
 
 ## Workflow
 
-<img width="5673" height="6723" alt="Xpression_collector" src="https://github.com/user-attachments/assets/59649a82-1531-4ba5-accf-47936399fefd" />
+<img width="5676" height="6723" alt="Xpression_collector" src="https://github.com/user-attachments/assets/0978c426-ba5a-463e-aa2b-5365d2cb852d" />
+
 
 ## Installation and dependencies
 
@@ -45,12 +46,12 @@ Xpression_collector is a simple Python-based pipeline for fetching RNA-seq reads
 git clone https://github.com/PuckerLab/Xpression_collect
 ```
 **Mandatory dependencies**
-- **Tools** - kallisto
+- **Tools** - kallisto, sratoolkit
 - **Python libraries** - pandas (v2.3.1 or greater), matplotlib (v3.10.5 or greater)
 
 **Optional dependencies**
-- **Tools** - BUSCO, sratoolkit, BLAST, MAFFT
-- **Python libraries** - pyfiglet (v1.0.2 or greater)
+- **Tools** - BUSCO 
+- **Python libraries** - pyfiglet (v1.0.2 or greater), rich (v15.0.0 or greater)
 
 ### (2) Docker installation
 
@@ -86,7 +87,7 @@ conda activate xpression_collector
 Usage:
 
 python3 Xpression_collector.py --cds <CDS_FILE>
-                               --sra [<TXT_FILE_WITH_SRA_ACCESSIONS_LIST> | --readfiles <FOLDER_WITH_SRA_ACCESSION_SUBFOLDERS>]
+                               --sra <TXT_FILE_WITH_SRA_ACCESSIONS_LIST>
                                --out <OUTPUT_DIR>
 MANDATORY:
 
@@ -96,7 +97,6 @@ Either provide a list of SRA accessions to fetch or path to already available ma
 
 --sra                  STR     Full path to TXT file with one SRA accession per line
 
---readfiles            STR     Full path to folder with SRA accession subfolders each containing FASTQ files
 
 --out                  STR     Full path to output directory
 
@@ -105,13 +105,13 @@ OPTIONAL:
 
 --sample_name          STR     Name of the species; default is sample
 
---uncompressed         STR     Provide this flag if your read files are uncompressed
+--min_sra_file_size    INT    Minimum file size cutoff in MB to check prefetched SRA file sizes to cath sralite files; default cutoff is 1MB
 
 --annotation_qc        STR     yes or no for BUSCO-based QC of the PEP file; default is yes
 
 --threads              STR     Total number of cores for running the pipeline; default is 4
 
---batch_size           STR     Number of SRA accessions to be fetched per batch; default is 1
+--parallel_prefetch    STR     Number of SRA accessions to be prefetched parallely; default is 2
 
 --attempts             STR     Number of attempts at prefetching and accession from SRA; default is just 1 attempt
 
@@ -120,25 +120,13 @@ OPTIONAL:
 
 --remove_isoforms      STR   Optional step to remove isoforms; yes or no; default is yes
 
+--merge_tpms           STR   Full path to config file containing the full paths to the filtered_tpm, and/or repr_filtered_tpms to be merged
+
 --min                  INT   Minimum percentage expression of top 100 genes
 
 --max                  INT   Maximum percentage expression of top 100 genes
 
 --black                STR   SRA IDs to be removed or blacklisted in a TXT file with one SRA accession ID per line
-
---scorecut             INT   BLAST bit score cutoff for isoform purging; default is 100
-
---simcut               INT   BLAST similarity cutoff for isoform purging; default is 99.0
-
---lencut               INT   Length cutoff for isoform purging; default is 100
-
---snvcut               INT   Number of single nucleotide variants allowed between two nucleotide sequences to group them as isoforms or not; default is 5
-
---blast                STR   Full path to BLAST aligner
-
---eval                 STR   evalue cutoff for self BLAST used in isoform purging; default is 1e-10
-
---mafft                STR    Full path to MAFFT
 
 --busco                STR    Full path to BUSCO; Specify busco_docker if BUSCO is installed via docker
 
@@ -161,7 +149,38 @@ OPTIONAL:
 
 --fasterq-dump         STR    Full path to the fasterq-dump executable
 
+--uncompressed         STR     Provide this flag if your read files are uncompressed
+
+--clean_up             STR    Clean up the TMP folder after a successful run; default is yes
+
 ```
+## More details
+
+-> The pipeline has the ability to restart after disruptions. Simply repeat the command you used before the disruption
+
+-> The TMP folder gets cleaned up after a successful run of the pipeline. You can retain it in case you want to take a deeper look
+
+-> --parallel_prefetch flag determines the number of parallel prefetch processes at a time
+
+  The optimal number of parallel prefetches cannot be defined precisely as it is influenced by the network bandwidth and the disk space available to store  .sra files
+
+  But some performance optimizations have shown that a prefetch process uses anywhere between 30-45% of a CPU
+
+  Based on this the pipeline runs two parallel prefetches by default with a dynamic queueing mechanism
+  
+  In the dynamic queueing and pushing design, once an accession's prefetch is done, it is pushed to the next step of fasterq-dump+pigz 
+  and kallisto which function serially since both of these are CPU-bound tasks showing maximum performance when utilizing all available 
+  cores at a time. The vacant spot in the prefetch block is now taken by the next accession in line making it a combinatorial scheme 
+  utilizing parallelization and serialization as necessary
+
+  Hence it is recommended to use the default parameter for --parallel_prefetch flag unless you are sure about abundance of storage space 
+  and excellent network bandwidth
+
+-> Alternative isoforms removal needs the GFF file to be given along with the CDS file and it is important for the CDS FASTA headers and the transcript identifiers in the GFF file to match to process without errors
+  
+-> Detailed guidelines on preparing the config file for --gff_config flag can be found in https://github.com/ShakNat/DupyliCate
+
+-> In case the headers in your CDS file are formatted differently when compared to the transcript identifiers in the GFF file supplied, you can use a helper called Fasta_fix.py to tackle this issue. The helper script and its detailed usage can be found in https://github.com/ShakNat/DupyliCate
 
 
 
