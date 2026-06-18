@@ -7,29 +7,6 @@ cd /tools
 
 echo "Installing bioinformatics tools..."
 
-# Install MAFFT
-if ! command -v mafft &> /dev/null; then
-    echo "Installing MAFFT..."
-    wget -q --show-progress https://mafft.cbrc.jp/alignment/software/mafft_7.526-1_amd64.deb
-    dpkg -i mafft_7.526-1_amd64.deb
-    rm mafft_7.526-1_amd64.deb
-    echo "✓ MAFFT installed successfully"
-else
-    echo "✓ MAFFT already installed"
-fi
-
-
-# Install BLAST
-if [ ! -d "blast" ]; then
-    echo "Installing BLAST..."
-    wget -q --show-progress https://ftp.ncbi.nlm.nih.gov/blast/executables/LATEST/ncbi-blast-2.17.0+-x64-linux.tar.gz
-    tar -xzf ncbi-blast-2.17.0+-x64-linux.tar.gz
-    mv ncbi-blast-2.17.0+ blast
-    rm ncbi-blast-2.17.0+-x64-linux.tar.gz
-    echo "✓ BLAST installed successfully"
-else
-    echo "✓ BLAST already installed"
-fi
 
 # Install SRA Toolkit
 if [ ! -d "/tools/sratoolkit" ]; then
@@ -60,7 +37,5 @@ echo "All bioinformatics tools installed successfully!"
 echo "Verifying tool installations..."
 ls -la /tools/
 echo ""
-mafft --version 2>&1 | head -1
-/tools/blast/bin/blastn -version 2>&1 | head -1
 /tools/sratoolkit/bin/fastq-dump --version 2>&1 | head -1
 echo "Installation verification complete."

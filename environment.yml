@@ -11,10 +11,9 @@ dependencies:
   - pandas
   - matplotlib
   - pyfiglet #optional
+  - rich #optional
   
   # External tools
-  - blast
-  - mafft
   - kallisto
   - busco
   - sra-tools

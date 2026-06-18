@@ -4,7 +4,7 @@ FROM python:3.12.7
 # Set the environment variables
 ENV DEBIAN_FRONTEND=noninteractive \
     CONDA_DIR=/opt/conda \
-    PATH="/tools/sratoolkit/bin:/tools/blast/bin:$PATH" \
+    PATH="/tools/sratoolkit/bin:$PATH" \
     MPLCONFIGDIR=/tmp/matplotlib \
     FONTCONFIG_PATH=/etc/fonts \
     FONTCONFIG_FILE=/etc/fonts/fonts.conf \
@@ -92,7 +92,7 @@ RUN chmod 777 /app
 
 # Add conda env to PATH (this makes busco/agat/python available globally)
 # Add conda env to PATH but keep Diamond priority
-ENV PATH="/tools/diamond:/tools/xpcollect_env/bin:$PATH" \
+ENV PATH="/tools/xpcollect_env/bin:$PATH" \
     PERL5LIB="/tools/xpcollect_env/lib/perl5/site_perl:/tools/xpcollect_env/lib/perl5"
 
 # Verify installations

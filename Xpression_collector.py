@@ -1,44 +1,39 @@
 ### Shakunthala Natarajan ###
 ### bug reports: s64snata@uni-bonn.de ###
 
-__version__=0.15
+__version__=0.2
 __usage__="""
 			python3 Xpression_collector.py
 			--cds <Full path to CDS file>
 			--sample_name <Name of the sample you are analyzing>
 			--sra <Full path to TXT file with one SRA accession per line>
-			--readfiles <Full path to folder with SRA accession subfolders each containing FASTQ files>
+			--min_sra_file_size <Minimum file size cutoff in MB to check prefetched SRA file sizes to cath sralite files that might cause downstream errors> default cutoff is 1MB
+			--gff <Full path to GFF file if isoform removal needs to be performed>
+			--gff_config <Full path to GFF config file specifying the different GFF attributes - child_attribute, child_parent_linker, parent_attribute> default attributes are ID, Parent, ID respectively
 			--uncompressed <Provide this flag if your read files are uncompressed>
 			--annotation_qc <yes or no for BUSCO-based QC of the PEP file> default is yes
 			--threads <Total number of cores for running the pipeline> default is 4
-			--batch_size <Number od SRA accessions to be fetched per batch> default is 1
+			--parallel_prefetch <Number of SRA accessions to be prefetched parallely> default is 2
 			--attempts <Number of attempts at prefetching and accession from SRA> default is just 1 attempt
 			--wait <Base wait time for sleep in case of network delays for prefetch; Increases exponentially with a base of 2 for each reattempt> default is 20 seconds
-			--min_sra_file_size <Minimum file size cutoff in MB to check prefetched SRA file sizes to cath sralite files that might cause downstream errors> default cutoff is 1MB
 			--remove_isoforms <Optional step to remove isoforms>< yes or no> default is yes
 			--merge_tpms <Full path to config file containing the full paths to the filtered_tpm, and/or repr_filtered_tpms to be merged>
 						 <First column will have paths to filtered_tpm files one per line; Second column will have paths to filtered_repr_tpm files one per line>
 			--min <Minimum percentage expression of top 100 genes>
 			--max <Maximum percentage expression of top 100 genes>
 			--black <SRA IDs to be removed or blacklisted in a TXT file with one SRA accession ID per line>
-			--scorecut <BLAST bit score cutoff for isoform purging> default is 100
-			--simcut <BLAST similarity cutoff for isoform purging> default is 99.0
-			--lencut <Length cutoff for isoform purging> default is 100
-			--snvcut <Number of single nucleotide variants allowed between two nucleotide sequences to group them as isoforms or not> default is 5
-			--blast <Full path to BLAST aligner>
-			--eval <evalue cutoff for self BLAST used in isoform purging> default is 1e-10
-			--mafft <Full path to MAFFT>
 			--busco <Full path to BUSCO> <Specify busco_docker if BUSCO is installed via docker>
 			--busco_lineage <Specify the BUSCO lineage> default is auto
 			--busco_version <Version of BUSCO> default is v6.0.0
 			--container_version <Container version of the BUSCO docker image>
 			--docker_host_path <Host path to be mounted on for running the docker image>
-			-docker_container_path <Container path of the docker image>
+			--docker_container_path <Container path of the docker image>
 			--organism_type <eukaryote or prokaryote> default is eukaryote
 			--kallisto <Full path to the kallisto executable>
 			--prefetch <Full path to the prefetch executable>
 			--fasterq-dump <Full path to the fasterq-dump executable>
 			--out <Full path to output directory>
+			--clean_up <Clean up the TMP folder after a successful run> default is yes
 			"""
 
 ### --- start imports --- ###
@@ -55,20 +50,29 @@ from pathlib import Path
 from collections import Counter, OrderedDict
 import matplotlib.pyplot as plt
 import threading
-from threading import Thread
+from threading import Thread, Lock
 from queue import Queue
 from operator import itemgetter
+from concurrent.futures import ProcessPoolExecutor, as_completed, TimeoutError
 try:
 	from pyfiglet import Figlet
 	f = Figlet(font='doom',width=200)
 	print(f.renderText('Xpression collector'))
 except ImportError:
 	pass
+
+try:
+	from rich.live import Live
+	from rich.table import Table
+	from rich.console import Console
+	RICH_AVAILABLE = True
+except ImportError:
+	RICH_AVAILABLE = False
+
 ### --- end of imports --- ###
 
-fetch_queue = Queue()
+kallisto_queue = Queue()
 barrier = None
-cpu_semaphore = threading.Semaphore(1)#restricts by allowing only one CPU-bound process to run at  time utilizing all the given cores; safety mechanism to avoid cpu clash between cpu-bound tasks in the queue-thread strategy
 
 #global definition of dictionary with problematic characters for dendropy processing, busco processing and their respective placeholders
 replacements = {
@@ -84,7 +88,46 @@ replacements = {
 		"\"": "§dquo",
 		"/": "§fsl"
 		}
+#functions to provide rich display of progress using rich library components
+status = {}
+status_lock = Lock()  # prevents simultaneous writes from multiple threads
 
+def update_status(accession, stage):
+	with status_lock:
+		status[accession] = stage
+
+
+def build_dashboard():
+	table = Table(title="Xpression Collector Live Status")
+	table.add_column("Accession")
+	table.add_column("Stage")
+
+	# --- per accession rows ---
+	for accession, stage in status.items():
+		color = {
+			"prefetching": "cyan",
+			"prefetch failed": "red",
+			"fasterq-dump & pigz": "yellow",
+			"fasterq-dump & pigz failed": "red",
+			"kallisto": "green",
+			"kallisto failed": "red"
+		}.get(stage, "white")
+		table.add_row(accession, f"[{color}]{stage}[/{color}]")
+
+	# --- compute summary counts from status dictionary ---
+	fully_completed = sum(1 for stage in status.values() if stage == "kallisto")
+	failed_count = sum(1 for stage in status.values() if "failed" in stage)
+	in_progress = sum(1 for stage in status.values() if stage not in ["kallisto"] and "failed" not in stage)
+
+	# --- summary row ---
+	table.add_row("---", "---")
+	table.add_row(
+		"[bold]SUMMARY[/bold]",
+		f"[green]completed:{fully_completed}[/green]  "
+		f"[red]failed:{failed_count}[/red]  "
+		f"[cyan]in progress:{in_progress}[/cyan]"
+	)
+	return table
 def load_multiple_fasta_file(fasta_file):
 	"""Load all sequences from a (possibly wrapped) FASTA file into a dict."""
 	content = {}
@@ -563,7 +606,7 @@ def get_data_for_jobs_to_run(readfile_status, logger, read_file_folders, final_o
 			timestr = time.strftime("%Y_%m_%d_")
 		except ModuleNotFoundError:
 			timestr = ""
-		final_result_file = final_output_folder + timestr + ID + ".tsv"
+		final_result_file = os.path.join(final_output_folder, f'{timestr}{ID}.tsv')
 		if os.path.isfile(final_result_file):
 			status = False
 		if status:
@@ -572,24 +615,37 @@ def get_data_for_jobs_to_run(readfile_status, logger, read_file_folders, final_o
 				 'fin': final_result_file, "ID": ID})
 	return jobs_to_do
 
-def job_executer(logger, jobs_to_run, kallisto, threads):
+def job_executer(accession, logger, jobs_to_run, kallisto, threads, kallisto_completed_accessions,failed_accessions_file,live_display):
 	"""! @brief run all jobs in list """
+	try:
+		for idx, job in enumerate(jobs_to_run):
+			logger.info("running job " + str(idx + 1) + "/" + str(len(jobs_to_run)) + " - " + job["ID"] + "\n")
 
-	for idx, job in enumerate(jobs_to_run):
-		logger.info("running job " + str(idx + 1) + "/" + str(len(jobs_to_run)) + " - " + job["ID"] + "\n")
+			if job['r2']:
+				cmd2 = " ".join([kallisto, "quant", "--index=" + job['index'], "--output-dir=" + job['out'], "--threads " + str(threads), job['r1'], job['r2']])
+			else:
+				cmd2 = " ".join([kallisto, "quant", "--index=" + job['index'], "--single -l 200 -s 100", "--output-dir=" + job['out'], "--threads " + str(threads), job['r1']])
+			p = subprocess.Popen(args=cmd2, shell=True)
+			p.communicate()
 
-		if job['r2']:
-			cmd2 = " ".join([kallisto, "quant", "--index=" + job['index'], "--output-dir=" + job['out'],
-							 "--threads " + str(threads), job['r1'], job['r2']])
+			p = subprocess.Popen(args="cp " + job["tmp"] + " " + job["fin"], shell=True)
+			p.communicate()
+		if p.returncode !=0:
+			with open(failed_accessions_file, 'a') as out:
+				out.write(f'{accession}\n')
+				out.flush()
+				os.fsync(out.fileno())
+			raise RuntimeError(f"Kallisto quantification did not complete successfully for {accession}")
 		else:
-			cmd2 = " ".join(
-				[kallisto, "quant", "--index=" + job['index'], "--single -l 200 -s 100", "--output-dir=" + job['out'],
-				 "--threads " + str(threads), job['r1']])
-		p = subprocess.Popen(args=cmd2, shell=True)
-		p.communicate()
-
-		p = subprocess.Popen(args="cp " + job["tmp"] + " " + job["fin"], shell=True)
-		p.communicate()
+			with open(kallisto_completed_accessions, 'a') as out:
+				out.write(f'{accession}\n')
+				out.flush()
+				os.fsync(out.fileno())
+	except RuntimeError as e:
+		if live_display:
+			update_status(accession, "kallisto failed")
+			live_display.update(build_dashboard())
+		logger.error(f"Kallisto quantification did not complete successfully for {accession}")
 
 #functions to merge the TPM. Counts files per batch
 def load_counttable(counttable):
@@ -651,14 +707,11 @@ def map_counts_to_genes(logger, transcript2gene, counts):
 
 def generate_output_file(output_file, data):
 	"""! @brief generate output file for given data dictionary """
-	try:
-		timestr = time.strftime("%Y_%m_%d")
-	except ModuleNotFoundError:
-		timestr = ""
+
 	samples = list(sorted(list(data.keys())))
 
 	with open(output_file, "w") as out:
-		out.write("\t".join([timestr] + samples) + '\n')
+		out.write("\t".join(['gene'] + samples) + '\n')
 		for gene in list(sorted(list(data.values())[0].keys())):
 			new_line = [gene]
 			for sample in samples:
@@ -725,125 +778,8 @@ def load_black_IDs(black_list_file):
 			line = f.readline()
 	return black_list
 
-#functions to remove isoforms
-def load_fasta(fasta_file):
-	"""! @brief load FASTA alignment into dictionary	"""
-
-	sequences = {}
-	with open(fasta_file) as f:
-		header = f.readline()[1:].strip()
-		if " " in header:
-			header = header.split(' ')[0]
-		seq = []
-		line = f.readline()
-		while line:
-			if line[0] == '>':
-				sequences.update({header: "".join(seq)})
-				header = line.strip()[1:]
-				if " " in header:
-					header = header.split(' ')[0]
-				seq = []
-			else:
-				seq.append(line.strip())
-			line = f.readline()
-		sequences.update({header: "".join(seq)})
-	return sequences
-
-
-def load_hits_per_bait(blast_result_file, scorecut, simcut, lencut):
-	"""! @brief load BLAST hits per bait
-	@return dictionary with baits as keys and lists of hits as values
-	"""
-
-	hits = {}
-	with open(blast_result_file, "r") as f:
-		line = f.readline()
-		while line:
-			parts = line.strip().split('\t')
-			if parts[0] != parts[1]:
-				if float(parts[-1]) > scorecut:  # BLAST hits are filtered with user defined criteria
-					if float(parts[2]) > simcut:
-						if int(parts[3]) > lencut:
-							try:
-								if parts[1] not in hits[parts[0]]:
-									hits[parts[0]].append(parts[1])  # add to existing dictionary entry
-							except KeyError:
-								hits.update({parts[0]: [parts[1]]})  # generate new entry in dictionary
-			line = f.readline()
-	return hits
-
-
-def load_aln_similarity(alignment, snv_cutoff):
-	"""! @brief load alignment similarity """
-
-	results = []
-	seqIDs = list(alignment.keys())
-	for idx1, ID1 in enumerate(seqIDs):
-		for idx2, ID2 in enumerate(seqIDs[1:]):
-			if idx2 >= idx1:
-				aln_seq1 = alignment[ID1]
-				aln_seq2 = alignment[ID2]
-				snv_counter = 0
-				indel_counter = 0
-				for i1, nt in enumerate(aln_seq1):
-					if nt != "-" and aln_seq2[i1] != "-":
-						if nt != aln_seq2[i1]:
-							snv_counter += 1
-					else:
-						indel_counter += 1
-				if snv_counter <= snv_cutoff:
-					results.append({'ID1': ID1, 'ID2': ID2, 'snvs': snv_counter, 'indels': indel_counter})
-	return results
-
-
-def identify_isoforms(alignment_results, snv_cutoff):
-	"""! @brief identify isoforms """
-
-	isoform_groups = []
-	for group in alignment_results:
-		tmp_groups = []
-		for entry in group:
-			if entry['snvs'] <= snv_cutoff:
-				status = False  # genes not included yet
-				for idx, g in enumerate(tmp_groups):
-					if entry['ID1'] in g:
-						tmp_groups[idx].append(entry['ID2'])
-						status = True
-						break
-					elif entry['ID2'] in g:
-						tmp_groups[idx].append(entry['ID1'])
-						status = True
-						break
-				if not status:
-					tmp_groups.append([entry['ID1'], entry['ID2']])
-		for g in tmp_groups:  # go through all tmp groups to break up too nested structure
-			if len(g) > 0:  # only collect non empty lists
-				isoform_groups.append(g)
-	return isoform_groups
-
-
-def identify_repr_isoform_per_group(logger, isoforms, seqs):
-	"""! @brief identify representative isoform per group """
-
-	repr_seq_collection = {}
-	repr_id_collection = {}
-	for group in isoforms:
-		#debug lines
-		if any('TC00001' in id for id in group):
-			print(f'isoform group is {group}')
-		tmp_seqs = []
-		for ID in group:
-			tmp_seqs.append({'ID': ID, 'seq': seqs[ID], 'len': len(seqs[ID])})
-		sorted_list = sorted(tmp_seqs, key=itemgetter('len'))
-		repr_seq_collection.update({sorted_list[-1]['ID']: sorted_list[-1]['seq']})
-		ID_values=[]
-		for element in sorted_list[:-1]:
-			ID_values.append(element['ID'])
-		repr_id_collection.update({sorted_list[-1]['ID']: ID_values})#make a dictionary where key is the repr isoform and the value is a list of all isoforms in the group represented by this isoform
-	return repr_seq_collection, repr_id_collection
-
 #function to produce TPM file without isoforms
-def keep_primary_transcript_exp(repr_ids, repr_tpm_file, repr_counts_file, primary_transcript_cds_file, exp_file):
+def keep_primary_transcript_exp(repr_ids, repr_tpm_file, primary_transcript_cds_file, exp_file):
 	primary_transcripts = []
 	with open (primary_transcript_cds_file, 'r') as f:
 		for line in f:
@@ -876,108 +812,8 @@ def keep_primary_transcript_exp(repr_ids, repr_tpm_file, repr_counts_file, prima
 
 	if '.tpm' in exp_file:
 		df_total.to_csv(repr_tpm_file, sep="\t", index=False)
-	elif '.count' in exp_file:
-		df_total.to_csv(repr_counts_file, sep="\t", index=False)
 
 	return repr_tpm_file
-
-#function to fetch SRA files
-def fetch_worker (attempts,sradir, accession,prefetch_command, minimum_sra_file_size_threshold, fasterq_dump, cores, logger, completed_accessions_file, base_wait, failed_accessions_file):
-	for attempt in range(attempts):
-		# Create subfolder for this accession
-		acc_dir = os.path.join(sradir, accession)
-		if os.path.exists(acc_dir):
-			shutil.rmtree(acc_dir)
-		os.makedirs(acc_dir, exist_ok=True)
-		prefetched_file = os.path.join(acc_dir, f"{accession}.sra")
-		try:
-			cmd = f"{prefetch_command} --max-size 200G {accession} -O {sradir}"
-			prefetch_result = subprocess.run(cmd, shell=True)
-			if prefetch_result.returncode != 0:  # if prefetch fails due to issues lik network disruption
-				raise RuntimeError(f"prefetch for {accession} failed with code {prefetch_result.returncode}")
-			if not os.path.exists(prefetched_file):  # if prefetch did not fetch an SRA file in the first place
-				raise RuntimeError(f"prefetch for {accession} did not fetch a .sra file")
-			filesize = (os.path.getsize(prefetched_file))/(1024 ** 2)#converting the file size returned in bytes by getsize to Mb
-			if filesize < minimum_sra_file_size_threshold:  # in case prefetch gets the sralite files
-				raise RuntimeError(
-					f"File size of the prefetched file for {accession} is smaller than the threshold size of {minimum_sra_file_size_threshold}")
-
-			with cpu_semaphore:
-				# fasterq-dump
-				cmd = f"{fasterq_dump} --split-3 --outdir {acc_dir} --skip-technical --threads {cores} {prefetched_file}"
-				fasterq_dump_result = subprocess.run(cmd, shell=True)
-				if fasterq_dump_result.returncode != 0:
-					raise RuntimeError(
-						f"fasterq-dump failed for {accession} with error code {fasterq_dump_result.returncode}")
-
-				# pigz (generalized)
-				fq_patterns = [
-					os.path.join(acc_dir, f"{accession}*.fastq"),
-					os.path.join(acc_dir, f"{accession}*.fq"),
-				]
-				fq_files = []
-				for pattern in fq_patterns:
-					fq_files.extend(glob.glob(pattern))
-				pigz_result = None
-				if fq_files:
-					cmd = f"pigz -p {cores} " + " ".join(fq_files)
-					pigz_result = subprocess.run(cmd, shell=True)
-					if pigz_result.returncode != 0:
-						raise RuntimeError(f"pigz failed with code {pigz_result.returncode}")
-					# After pigz, check what was created
-					logger.info(f"Files in {acc_dir}:")
-					all_valid = False
-					for f in os.listdir(acc_dir):
-						logger.info(f"  {f}")
-				gz_files = glob.glob(os.path.join(acc_dir, "*.gz"))
-				all_valid = gz_files and all(os.path.getsize(f) > 0 for f in gz_files)  # checks for all fetched gzipped file sizes and if all are non-empty
-				if not all_valid:
-					raise RuntimeError(f"gz files missing or empty for {accession}")
-				# if fetching is successful mark as completed accession and break out of the retry loop
-				with open(completed_accessions_file, 'a') as out:
-					out.write(f'{accession}\n')
-					out.flush()
-					os.fsync(out.fileno())
-				successfull_accession = accession
-			fetch_queue.put(successfull_accession)
-			break
-		except RuntimeError as e:
-			logger.warning(f"Attempt {attempt + 1} failed for {accession}: {e}")
-			# clean up partial files before retrying
-			if os.path.exists(acc_dir):
-				shutil.rmtree(acc_dir)
-				os.makedirs(acc_dir, exist_ok=True)
-			if attempt < attempts - 1:
-				wait = base_wait * (2 ** attempt)
-				logger.info(f"Retrying {accession} in {wait}s")
-				time.sleep(wait)
-			else:
-				logger.error(f"All attempts exhausted for {accession}, marking as failed")
-				with open(failed_accessions_file, 'a') as out:
-					out.write(f'{accession}\n')
-					out.flush()
-					os.fsync(out.fileno())
-
-#function to perform kallisto quantification as soon as SRA file is fetched
-def kallisto_worker(index_file, sradir,readfile_status, logger,kallistodir,kallisto,cds_file,cores,tmpdir):
-	while True:
-		accession = fetch_queue.get()
-		if accession is barrier:
-			break
-		# Run Kallisto
-		with cpu_semaphore:
-			# --- load data --- #
-			acc_dir = os.path.join(sradir, accession)
-			single_read_file_folders = [acc_dir]
-			logger.info("Number of FASTQ file folders detected: " + str(len(single_read_file_folders)) + "\n")
-
-			# --- prepare jobs to run --- #
-			jobs_to_run = get_data_for_jobs_to_run(readfile_status, logger, single_read_file_folders, kallistodir, index_file,tmpdir)
-			logger.info("Number of jobs to run: " + str(len(jobs_to_run)) + "\n")
-
-			# --- run jobs --- #
-			job_executer(logger, jobs_to_run, kallisto, cores)
-		fetch_queue.task_done()
 
 #function to check if tsv files for merge have the same genes in the same order in the first column
 def check_gene_consistency(file_paths):
@@ -1035,6 +871,311 @@ def merge_expression_tsvs(base_file, additional_files):
 	merged = reduce(lambda left, right: left.join(right, how='inner'), dfs)
 	return merged.reset_index()
 
+#function for removing alternate transcripts from the peptide FASTA file
+def isoform_clean(gff3_input_file, cds_file, no_trans_cds, child_attribute, child_parent_linker):
+	repr_ids={}
+	no_gene_no_parent = False
+	has_gene = False
+	has_parent =False
+	if gff3_input_file[-2:].lower() != 'gz':
+		with open(gff3_input_file, "r") as f:
+			gff_lines = f.readlines()
+			# checking if gene feature is present in the GFF file
+			has_gene = any(line.split('\t')[2].upper() == 'GENE' for line in gff_lines
+						   if not line.startswith('#') and len(line.split('\t')) >= 3)
+			has_mrna = any(line.split('\t')[2].upper() == 'MRNA' for line in gff_lines
+						   if not line.startswith('#') and len(line.split('\t')) >= 3)
+
+	else:
+		with gzip.open(gff3_input_file, "rt") as f:
+			gff_lines = f.readlines()
+			# checking if gene feature is present in the GFF file
+			has_gene = any(line.split('\t')[2].upper() == 'GENE' for line in gff_lines
+						   if not line.startswith('#') and len(line.split('\t')) >= 3)
+			has_mrna = any(line.split('\t')[2].upper() == 'MRNA' for line in gff_lines
+						   if not line.startswith('#') and len(line.split('\t')) >= 3)
+	if has_mrna:
+		coding_feature = 'MRNA'
+	else:
+		has_transcript = any(line.split('\t')[2].upper() == 'TRANSCRIPT' for line in gff_lines
+						   if not line.startswith('#') and len(line.split('\t')) >= 3)
+		if has_transcript:
+			coding_feature = 'TRANSCRIPT'
+		else:
+			has_cds = any(line.split('\t')[2].upper() == 'CDS' for line in gff_lines
+						   if not line.startswith('#') and len(line.split('\t')) >= 3)
+			if has_cds:
+				coding_feature = 'CDS'
+			else:
+				coding_feature = 'EXON'
+
+	nogene_noparent_counter = 0
+	if gff3_input_file[-2:].lower() != 'gz':  # uncompressed gff file
+		transcripts_per_gene = {}
+		with open(gff3_input_file, "r") as f:
+			line = f.readline()
+			while line:
+				if line[0] != "#":
+					no_gene_no_parent = False  # Reset for each line
+					parts = line.strip().split('\t')
+					if len(parts) > 2:
+						if parts[2].upper() == coding_feature:
+							partsnew = parts[-1].strip().split(';')
+							# Check if any attribute starts with 'Parent='
+							has_parent = any(attr.startswith(str(child_parent_linker) + '=') for attr in partsnew)
+							if has_gene and has_parent:
+								nogene_noparent_counter += 1
+								for each in partsnew:
+									pattern_par = r'^' + re.escape(child_parent_linker + '=') + r'.*$'
+									if re.match(pattern_par, each):
+										partsnew1 = str(each).replace(str(child_parent_linker) + '=', "")
+							for every in partsnew:
+								pattern_ID = r'^' + re.escape(child_attribute + '=') + r'.*$'
+								if re.match(pattern_ID, every):
+									partsnew0 = str(every).replace(str(child_attribute) + '=', "")
+							try:
+								transcripts_per_gene[partsnew1].append(partsnew0)
+							except KeyError:
+								transcripts_per_gene.update({partsnew1: [partsnew0]})
+				line = f.readline()
+
+	else:#compressed gff file
+		transcripts_per_gene = {}
+		with gzip.open(gff3_input_file, "rt") as f:
+			line = f.readline()
+			while line:
+				if line[0] != "#":
+					no_gene_no_parent = False  # Reset for each line
+					parts = line.strip().split('\t')
+					if len(parts) > 2:
+
+						if parts[2].upper() == coding_feature:
+							partsnew = parts[-1].strip().split(';')
+							# Check if any attribute starts with 'Parent='
+							has_parent = any(attr.startswith(str(child_parent_linker)+'=') for attr in partsnew)
+							if has_gene and has_parent:
+								nogene_noparent_counter += 1
+								for each in partsnew:
+									pattern_par = r'^' + re.escape(child_parent_linker + '=') + r'.*$'
+									if re.match(pattern_par, each):
+										partsnew1 = str(each).replace(str(child_parent_linker)+'=', "")
+							for every in partsnew:
+								pattern_ID = r'^' + re.escape(child_attribute + '=') + r'.*$'
+								if re.match(pattern_ID, every):
+									partsnew0 = str(every).replace(str(child_attribute)+'=', "")
+							try:
+								transcripts_per_gene[partsnew1].append(partsnew0)
+							except KeyError:
+								transcripts_per_gene.update({partsnew1: [partsnew0]})
+				line = f.readline()
+
+
+	gene_names = list(transcripts_per_gene.keys())
+	#dealing with uncompressed cds file
+	if cds_file[-2:].lower() != 'gz':
+		with open(cds_file, "r") as f:
+			# Only write peptide output when no CDS mapping available
+			with open(no_trans_cds, "w") as out:
+				line = f.readlines()
+				cds_dict = {}
+				for each in line:
+					if '>' in each:
+						ind = line.index(each)
+						cds_dict.update({str(each).replace('>', '').replace('\n', ''): line[ind + 1]})
+				transcripts = list(cds_dict.keys())
+
+				for gene in gene_names:
+					trans_length = []
+					isoform_list=[]
+					for trans in transcripts_per_gene[gene]:
+						for each in transcripts:
+							if trans == each:
+								if len(transcripts_per_gene[gene]) < 2:
+									out.write('>' + str(each) + '\n' + str(cds_dict[each]))
+								else:
+									trans_length.append((each, cds_dict[each]))
+									isoform_list.append(each)
+					if len(trans_length) == 0:
+						pass
+					else:
+						best_trans, seq = max(trans_length, key=lambda x: len(x[1]))
+						out.write('>' + str(best_trans) + "\n" + str(seq))
+						isoform_list.remove(best_trans)
+						repr_ids[best_trans] = isoform_list.copy()
+
+
+	else:#dealing with compressed cds file
+		with gzip.open(cds_file, "rt") as f:
+			with open(no_trans_cds, "w") as out:
+				line = f.readlines()
+				cds_dict = {}
+				for each in line:
+					if '>' in each:
+						ind = line.index(each)
+						cds_dict.update({str(each).replace('>', '').replace('\n', ''): line[ind + 1]})
+				transcripts = list(cds_dict.keys())
+
+				for gene in gene_names:
+					trans_length = []
+					isoform_list = []
+					for trans in transcripts_per_gene[gene]:
+						for each in transcripts:
+							if trans == each:
+								if len(transcripts_per_gene[gene]) < 2:
+									out.write('>' + str(each) + '\n' + str(cds_dict[each]))
+								else:
+									trans_length.append((each, cds_dict[each]))
+									isoform_list.append(each)
+					if len(trans_length) == 0:
+						pass
+					else:
+						best_trans, seq = max(trans_length, key=lambda x: len(x[1]))
+						out.write('>' + str(best_trans) + "\n" + str(seq))
+						isoform_list.remove(best_trans)
+						repr_ids[best_trans] = isoform_list.copy()
+	return repr_ids
+
+# function to perform kallisto quantification as soon as SRA file is fetched
+def fasterqdump_kallisto_worker(fasterqpigz_completed_accessions, kallisto_completed_accessions, index_file, sradir, readfile_status, logger, kallistodir, kallisto, cores,tmpdir, fasterq_dump, attempts, base_wait, failed_accessions_file,fasterqpigz_completed_accessions_file,kallisto_completed_accessions_file,live_display):
+	while True:
+		accession = kallisto_queue.get()
+		if accession is barrier:
+			break
+		acc_dir = os.path.join(sradir, accession)
+		prefetched_file = os.path.join(acc_dir, f"{accession}.sra")
+		# Run fasterq-dump and Kallisto
+		if accession not in fasterqpigz_completed_accessions:
+			if live_display:
+				update_status(accession, "fasterq-dump & pigz")
+				live_display.update(build_dashboard())
+			for attempt in range(attempts):
+				try:
+					# fasterq-dump
+					cmd = f"{fasterq_dump} --split-3 --outdir {acc_dir} --skip-technical --threads {cores} {prefetched_file}"
+					fasterq_dump_result = subprocess.run(cmd, shell=True)
+					if fasterq_dump_result.returncode != 0:
+						raise RuntimeError(f"fasterq-dump failed for {accession} with error code {fasterq_dump_result.returncode}")
+
+					# pigz (generalized)
+					fq_patterns = [
+						os.path.join(acc_dir, f"{accession}*.fastq"),
+						os.path.join(acc_dir, f"{accession}*.fq"),
+					]
+					fq_files = []
+					for pattern in fq_patterns:
+						fq_files.extend(glob.glob(pattern))
+					pigz_result = None
+					if fq_files:
+						cmd = f"pigz -p {cores} " + " ".join(fq_files)
+						pigz_result = subprocess.run(cmd, shell=True)
+						if pigz_result.returncode != 0:
+							raise RuntimeError(f"pigz failed with code {pigz_result.returncode}")
+						# After pigz, check what was created
+						logger.info(f"Files in {acc_dir}:")
+						all_valid = False
+						for f in os.listdir(acc_dir):
+							logger.info(f"  {f}")
+					gz_files = glob.glob(os.path.join(acc_dir, "*.gz"))
+					all_valid = gz_files and all(os.path.getsize(f) > 0 for f in gz_files)  # checks for all fetched gzipped file sizes and if all are non-empty
+					if not all_valid:
+						raise RuntimeError(f"gz files missing or empty for {accession}")
+					# if fetching is successful mark as completed accession, remove the prefetched file (.sra) and break out of the retry loop
+					rm_cmd = f'rm {prefetched_file}'
+					p = subprocess.Popen(args=rm_cmd, shell=True)
+					p.communicate()
+					with open(fasterqpigz_completed_accessions_file, 'a') as out:
+						out.write(f'{accession}\n')
+						out.flush()
+						os.fsync(out.fileno())
+					break
+				except RuntimeError as e:
+					logger.warning(f"Attempt {attempt + 1} failed for {accession}: {e}")
+					# clean up partial files before retrying
+					if os.path.exists(acc_dir):
+						shutil.rmtree(acc_dir)
+						os.makedirs(acc_dir, exist_ok=True)
+					if attempt < attempts - 1:
+						wait = base_wait * (2 ** attempt)
+						logger.info(f"Retrying {accession} in {wait}s")
+						time.sleep(wait)
+					else:
+						if live_display:
+							update_status(accession, "faster-dump & pigz failed")
+							live_display.update(build_dashboard())
+						logger.error(f"All attempts exhausted for {accession}, marking as failed")
+						with open(failed_accessions_file, 'a') as out:
+							out.write(f'{accession}\n')
+							out.flush()
+							os.fsync(out.fileno())
+
+		if accession not in kallisto_completed_accessions:
+			if live_display:
+				update_status(accession, "kallisto")
+				live_display.update(build_dashboard())
+			# --- load data --- #
+			acc_dir = os.path.join(sradir, accession)
+			single_read_file_folders = [acc_dir]
+			logger.info("Number of FASTQ file folders detected: " + str(len(single_read_file_folders)) + "\n")
+
+			# --- prepare jobs to run --- #
+			jobs_to_run = get_data_for_jobs_to_run(readfile_status, logger, single_read_file_folders, kallistodir,index_file, tmpdir)
+			logger.info("Number of jobs to run: " + str(len(jobs_to_run)) + "\n")
+
+			# --- run jobs --- #
+			job_executer(accession, logger, jobs_to_run, kallisto, cores, kallisto_completed_accessions_file,failed_accessions_file,live_display)
+			#remove the accession SRA folder after kallisto is completed for that accession
+			shutil.rmtree(acc_dir)
+		kallisto_queue.task_done()
+
+#function to control fetching of SRA files through parallelized prefetch
+def parallel_prefetch(prefetch_completed_accessions, accession, attempts,sradir, prefetch_command, minimum_sra_file_size_threshold, base_wait, failed_accessions_file, prefetch_completed_accessions_file, logger,live_display):
+	if accession not in prefetch_completed_accessions:
+		if live_display:
+			update_status(accession, "prefetch")
+			live_display.update(build_dashboard())
+		for attempt in range(attempts):
+			# Create subfolder for this accession
+			acc_dir = os.path.join(sradir, accession)
+			if os.path.exists(acc_dir):
+				shutil.rmtree(acc_dir)
+			os.makedirs(acc_dir, exist_ok=True)
+			prefetched_file = os.path.join(acc_dir, f"{accession}.sra")
+			try:
+				cmd = f"{prefetch_command} --max-size 200G {accession} -O {sradir}"
+				prefetch_result = subprocess.run(cmd, shell=True)
+				if prefetch_result.returncode != 0:  # if prefetch fails due to issues lik network disruption
+					raise RuntimeError(f"prefetch for {accession} failed with code {prefetch_result.returncode}")
+				if not os.path.exists(prefetched_file):  # if prefetch did not fetch an SRA file in the first place
+					raise RuntimeError(f"prefetch for {accession} did not fetch a .sra file")
+				filesize = (os.path.getsize(prefetched_file)) / (1024 ** 2)  # converting the file size returned in bytes by getsize to Mb
+				if filesize < minimum_sra_file_size_threshold:  # in case prefetch gets the sralite files
+					raise RuntimeError(f"File size of the prefetched file for {accession} is smaller than the threshold size of {minimum_sra_file_size_threshold}")
+				kallisto_queue.put(accession)
+				with open(prefetch_completed_accessions_file, 'a') as out:
+					out.write(f'{accession}\n')
+					out.flush()
+					os.fsync(out.fileno())
+				break
+			except RuntimeError as e:
+				logger.warning(f"Attempt {attempt + 1} failed for {accession}: {e}")
+				# clean up partial files before retrying
+				if os.path.exists(acc_dir):
+					shutil.rmtree(acc_dir)
+					os.makedirs(acc_dir, exist_ok=True)
+				if attempt < attempts - 1:
+					wait = base_wait * (2 ** attempt)
+					logger.info(f"Retrying {accession} in {wait}s")
+					time.sleep(wait)
+				else:
+					if live_display:
+						update_status(accession, "prefetch failed")
+						live_display.update(build_dashboard())
+					logger.error(f"All attempts exhausted for {accession}, marking as failed")
+					with open(failed_accessions_file, 'a') as out:
+						out.write(f'{accession}\n')
+						out.flush()
+						os.fsync(out.fileno())
+
 def main(arguments):
 	if '--sample_name' in arguments:
 		orgname = arguments[arguments.index('--sample_name')+1]
@@ -1042,8 +1183,21 @@ def main(arguments):
 		orgname = 'sample'
 	if  '--sra' in arguments:#list of SRA accessions to be fetched from NCBI SRA
 		todo_sras = arguments[arguments.index('--sra')+1]
-	elif '--readfiles' in arguments:#Full path to folder with RNA-seq read files
-		todo_sras = arguments[arguments.index('--readfiles')+1]
+	if '--gff' in arguments:
+		gff_file=arguments[arguments.index('--gff')+1]
+	# gff file config params
+	if '--gff_config' in arguments:
+		gff_config_file = arguments[arguments.index('--gff_config') + 1]
+		with open(gff_config_file, 'r') as f:
+			for line in f:
+				parts = line.strip().split()
+				child_attribute = parts[0]
+				child_parent_linker = parts[1]
+				parent_attribute = parts[2]
+	else:
+		child_attribute = 'ID'
+		child_parent_linker = 'Parent'
+		parent_attribute = 'ID'
 	if '--fastq_pattern' in arguments:
 		pattern_names = arguments[arguments.index('--fastq_pattern')+1]#specify fastq read file name pattern for the paired end files separated by commas without spaces like - _pass_1,_pass_2_
 		pattern_names_list = pattern_names.split(',')
@@ -1112,10 +1266,10 @@ def main(arguments):
 		cores = int(arguments[arguments.index('--threads')+1])
 	else:
 		cores = 4
-	if '--batch_size' in arguments:
-		batch_size=int(arguments[arguments.index('--batch_size')+1])
+	if '--parallel_prefetch' in arguments:
+		batch_size=int(arguments[arguments.index('--parallel_prefetch')+1])
 	else:
-		batch_size = 1
+		batch_size = 2
 
 	if '--remove_isoforms' in arguments:
 		remove_isoforms = arguments[arguments.index('--remove_isoforms')+1]
@@ -1142,31 +1296,17 @@ def main(arguments):
 	else:
 		black_list = {}
 
-	#flags to remove isoforms
-	if '--scorecut' in arguments:
-		scorecut = int(arguments[arguments.index('--scorecut') + 1])
-	else:
-		scorecut = 100
-
-	if '--simcut' in arguments:
-		simcut = float(arguments[arguments.index('--simcut') + 1])
-	else:
-		simcut = 99.0
-
-	if '--lencut' in arguments:
-		lencut = int(arguments[arguments.index('--lencut') + 1])
-	else:
-		lencut = 100
-
-	if '--snvcut' in arguments:
-		snv_cutoff = int(arguments[arguments.index('--snvcut') + 1])
-	else:
-		snv_cutoff = 5
 	outdir = arguments[arguments.index('--out') + 1]
 	if outdir[-1] != "/":
 		outdir += "/"
 	if not os.path.exists(outdir):
 		os.makedirs(outdir)
+
+	if '--clean_up' in arguments:
+		clean_up = arguments[arguments.index('--clean_up')+1]
+	else:
+		clean_up = 'yes'
+
 	logfile = os.path.join(outdir, 'Xpression_collector.log')
 
 	# Create a logger
@@ -1177,18 +1317,19 @@ def main(arguments):
 	file_handler = logging.FileHandler(logfile)
 	file_handler.setLevel(logging.DEBUG)  # Write all logs to file
 
-	# Create a stream handler to print logs to console
-	console_handler = logging.StreamHandler()
-	console_handler.setLevel(logging.DEBUG)  # Show only INFO and above in console
-
 	# Create a common log format
 	formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
 	file_handler.setFormatter(formatter)
-	console_handler.setFormatter(formatter)
+
 
 	# Step 5: Add both handlers to the logger
 	logger.addHandler(file_handler)
-	logger.addHandler(console_handler)
+	#logging to console as well only if rich library is not found otherwise just log to file
+	if not RICH_AVAILABLE:
+		console_handler = logging.StreamHandler()
+		console_handler.setLevel(logging.DEBUG)
+		console_handler.setFormatter(formatter)
+		logger.addHandler(console_handler)
 
 	if '--sra' in arguments:
 		sradir=os.path.join(outdir,'SRA')
@@ -1199,39 +1340,6 @@ def main(arguments):
 		os.makedirs(tmpdir)
 		if tmpdir[-1] != '/':
 			tmpdir += "/"
-
-	#Option for user to give full path to blast
-	#only BLAST offers blastn DIAMOND does not offer blastn option, it offers just protein vs protein or nucleotide vs protein alignments
-	if '--blast' in arguments:
-		aligner = arguments[arguments.index('--blast')+1]
-		aligner = os.path.join(aligner, '')#to ensure that / is automatically added after the path is mentioned by the user if it is not already there
-		aligner = aligner.replace(os.sep, '/')#to ensure adding only forward slash for ubuntu and windows systems
-		makeblastdb = os.path.join(aligner + 'makeblastdb')
-		blastn = os.path.join(aligner + 'blastn')
-	else:
-		makeblastdb = 'makeblastdb'
-		blastn = 'blastn'
-
-	#Option for user to give full path to diamond
-	if '--diamond' in arguments:
-		aligner = arguments[arguments.index('--diamond')+1]
-		aligner = os.path.join(aligner, '')#to ensure that / is automatically added after the path is mentioned by the user if it is not already there
-		aligner = aligner.replace(os.sep, '/')#to ensure adding only forward slash for ubuntu and windows systems
-		diamond = os.path.join(aligner + 'diamond')
-	else:
-		diamond = 'diamond'
-
-	#evalue for self local alignment in the isoform purger steps
-	if '--eval' in arguments:
-		eval = arguments[arguments.index('--eval')+1]
-	else:
-		eval = '1e-10'
-
-	#Option for user to give full path to MAFFT
-	if '--mafft' in arguments:
-		mafft = arguments[arguments.index('--mafft')+1]#full path to mafft including the mafft.bat file
-	else:
-		mafft = 'mafft' #defaults to v7.526 of MAFFT - the most recent version of MAFFT while developing this script
 	kallistofinaldir = os.path.join(outdir, 'Kallisto_run_final')
 	if not os.path.exists(kallistofinaldir):
 		os.makedirs(kallistofinaldir)
@@ -1400,15 +1508,36 @@ def main(arguments):
 
 	#code block to record completed accessions to tackle internet and network disruption interruptions
 	completed_accessions = set()
-	completed_accessions_file = os.path.join(outdir,'Fetch_completed_accession.txt')
-	failed_accessions_file = os.path.join(outdir,'Fetch_failed_accession.txt')
-	if os.path.exists(completed_accessions_file):
-		with open (completed_accessions_file, 'r') as f:
-			completed_accessions = set(line.strip() for line in f)
+	prefetch_completed_accessions_file = os.path.join(tmpdir,'prefetch_completed_accession.txt')
+	fasterqpigz_completed_accessions_file = os.path.join(tmpdir,'fasterq-dump_pigz_completed_accession.txt')
+	kallisto_completed_accessions_file = os.path.join(tmpdir, 'kallisto_quant_completed_accessions.txt')
+
+	failed_accessions_file = os.path.join(outdir,'failed_accessions.txt')
+	kallistodir=os.path.join(tmpdir,'Kallisto_abundances')
+	if not os.path.exists(kallistodir):
+		os.makedirs(kallistodir)
+
+	prefetch_completed_accessions = set()
+	fasterqpigz_completed_accessions = set()
+	kallisto_completed_accessions = set()
+
+	if os.path.exists(prefetch_completed_accessions_file):
+		with open (prefetch_completed_accessions_file, 'r') as f:
+			prefetch_completed_accessions = set(line.strip() for line in f)
+
+	if os.path.exists(fasterqpigz_completed_accessions_file):
+		with open (fasterqpigz_completed_accessions_file, 'r') as f:
+			fasterqpigz_completed_accessions = set(line.strip() for line in f)
+
+	if os.path.exists(kallisto_completed_accessions_file):
+		with open (kallisto_completed_accessions_file, 'r') as f:
+			kallisto_completed_accessions = set(line.strip() for line in f)
+
+
 	# Clear failed accessions file at start of each run
 	with open(failed_accessions_file, 'w') as f:
 		pass
-	sra_accessions = [acc for acc in load_IDs(todo_sras) if acc not in completed_accessions]
+	sra_accessions = [acc for acc in load_IDs(todo_sras)]
 
 	# create kallisto index file
 	index_file = os.path.join(tmpdir, "index")
@@ -1417,109 +1546,47 @@ def main(arguments):
 		cmd1 = " ".join([kallisto, "index", "--index=" + index_file, "--make-unique", cds_file])
 		p = subprocess.Popen(args=cmd1, shell=True)
 		p.communicate()
-	batch_counter = 1
-	while sra_accessions:
-		batch = sra_accessions[:batch_size]  # take first N
-		sra_accessions = sra_accessions[batch_size:]  # consume N
-		logger.info(f"Processing batch {batch_counter} ({len(batch)} SRAs)")
 
-		for accession in batch:
-			for attempt in range(attempts):
-				# Create subfolder for this accession
-				acc_dir = os.path.join(sradir, accession)
-				if os.path.exists(acc_dir):
-					shutil.rmtree(acc_dir)
-				os.makedirs(acc_dir, exist_ok=True)
-				prefetched_file = os.path.join(acc_dir, f"{accession}.sra")
-				try:
-					cmd = f"{prefetch_command} --max-size 200G {accession} -O {sradir}"
-					prefetch_result = subprocess.run(cmd, shell=True)
-					if prefetch_result.returncode != 0:  # if prefetch fails due to issues lik network disruption
-						raise RuntimeError(
-							f"prefetch for {accession} failed with code {prefetch_result.returncode}")
-					if not os.path.exists(
-							prefetched_file):  # if prefetch did not fetch an SRA file in the first place
-						raise RuntimeError(f"prefetch for {accession} did not fetch a .sra file")
-					filesize = (os.path.getsize(prefetched_file)) / (
-								1024 ** 2)  # converting the file size returned in bytes by getsize to Mb
-					if filesize < minimum_sra_file_size_threshold:  # in case prefetch gets the sralite files
-						raise RuntimeError(
-							f"File size of the prefetched file for {accession} is smaller than the threshold size of {minimum_sra_file_size_threshold}")
+	if RICH_AVAILABLE:
+		live_display = Live(build_dashboard(), refresh_per_second=2)
+		live_display.start()
+	else:
+		live_display = None
 
-					# fasterq-dump
-					cmd = f"{fasterq_dump} --split-3 --outdir {acc_dir} --skip-technical --threads {cores} {prefetched_file}"
-					fasterq_dump_result = subprocess.run(cmd, shell=True)
-					if fasterq_dump_result.returncode != 0:
-						raise RuntimeError(
-							f"fasterq-dump failed for {accession} with error code {fasterq_dump_result.returncode}")
+	fk_thread = Thread(target=fasterqdump_kallisto_worker, args=(fasterqpigz_completed_accessions, kallisto_completed_accessions, index_file, sradir, readfile_status, logger, kallistodir, kallisto, cores,tmpdir, fasterq_dump, attempts, base_wait, failed_accessions_file,fasterqpigz_completed_accessions_file,kallisto_completed_accessions_file,live_display))
+	fk_thread.start()
 
-					# pigz (generalized)
-					fq_patterns = [
-						os.path.join(acc_dir, f"{accession}*.fastq"),
-						os.path.join(acc_dir, f"{accession}*.fq"),
-					]
-					fq_files = []
-					for pattern in fq_patterns:
-						fq_files.extend(glob.glob(pattern))
-					pigz_result = None
-					if fq_files:
-						cmd = f"pigz -p {cores} " + " ".join(fq_files)
-						pigz_result = subprocess.run(cmd, shell=True)
-						if pigz_result.returncode != 0:
-							raise RuntimeError(f"pigz failed with code {pigz_result.returncode}")
-						# After pigz, check what was created
-						logger.info(f"Files in {acc_dir}:")
-						all_valid = False
-						for f in os.listdir(acc_dir):
-							logger.info(f"  {f}")
-					gz_files = glob.glob(os.path.join(acc_dir, "*.gz"))
-					all_valid = gz_files and all(os.path.getsize(f) > 0 for f in gz_files)  # checks for all fetched gzipped file sizes and if all are non-empty
-					if not all_valid:
-						raise RuntimeError(f"gz files missing or empty for {accession}")
-					# if fetching is successful mark as completed accession and break out of the retry loop
-					with open(completed_accessions_file, 'a') as out:
-						out.write(f'{accession}\n')
-						out.flush()
-						os.fsync(out.fileno())
-				except RuntimeError as e:
-					logger.warning(f"Attempt {attempt + 1} failed for {accession}: {e}")
-					# clean up partial files before retrying
-					if os.path.exists(acc_dir):
-						shutil.rmtree(acc_dir)
-						os.makedirs(acc_dir, exist_ok=True)
-					if attempt < attempts - 1:
-						wait = base_wait * (2 ** attempt)
-						logger.info(f"Retrying {accession} in {wait}s")
-						time.sleep(wait)
-					else:
-						logger.error(f"All attempts exhausted for {accession}, marking as failed")
-						with open(failed_accessions_file, 'a') as out:
-							out.write(f'{accession}\n')
-							out.flush()
-							os.fsync(out.fileno())
+	# keep active prefetch threads = batch dynamically
+	active_prefetch_threads = []
+	for accession in sra_accessions:
+		# wait if batch prefetches are already running
+		while len([t for t in active_prefetch_threads if t.is_alive()]) >= batch_size:
+			time.sleep(5)  # check every 5 seconds
 
-			# Create Kallisto dir
-			kallistodir = os.path.join(outdir, f'Kallisto_run_{batch_counter}')
-			os.makedirs(kallistodir, exist_ok=True)
-			if kallistodir[-1] != "/":
-				kallistodir += "/"
+		# clean up finished threads
+		active_prefetch_threads = [t for t in active_prefetch_threads if t.is_alive()]
+		# start new prefetch thread for this accession
+		t = Thread(target=parallel_prefetch, args=(prefetch_completed_accessions, accession, attempts,sradir, prefetch_command, minimum_sra_file_size_threshold, base_wait, failed_accessions_file, prefetch_completed_accessions_file, logger,live_display))
+		t.start()
+		active_prefetch_threads.append(t)
 
-			# --- load data --- #
-			acc_dir = os.path.join(sradir, accession)
-			single_read_file_folders = [acc_dir]
-			logger.info("Number of FASTQ file folders detected: " + str(len(single_read_file_folders)) + "\n")
+	# wait for all remaining prefetch threads to finish
+	for t in active_prefetch_threads:
+		t.join()
 
-			# --- prepare jobs to run --- #
-			jobs_to_run = get_data_for_jobs_to_run(readfile_status, logger,single_read_file_folders, kallistodir,index_file, tmpdir)
-			logger.info("Number of jobs to run: " + str(len(jobs_to_run)) + "\n")
+	# signal fasterq+kallisto consumer that no more accessions are coming
+	kallisto_queue.put(barrier)
+	fk_thread.join()  # wait for last Kallisto to finish before merge step
 
-			# --- run jobs --- #
-			job_executer(logger, jobs_to_run, kallisto, cores)
+	# Merge the TPM, Counts of SRA samples into a single TPM, Counts file respectively
+	tpmfile = os.path.join(kallistofinaldir, f'{orgname}_unfiltered.tpms.tsv')
+	countsfile = os.path.join(kallistofinaldir, f'{orgname}_unfiltered.counts.tsv')
 
-		# Merge the TPM, Counts numbers of SRA samples in a batch into a single TPM, Counts file respectively
-		tpmfile = os.path.join(kallistofinaldir, f"TPM_{batch_counter}.txt")
-		countsfile = os.path.join(kallistofinaldir, f"Counts_{batch_counter}.txt")
-
+	if not (os.path.exists(tpmfile) and os.path.exists(countsfile)):
+		logger.info(f'Merging TPM files and count files of all the samples')
+		if RICH_AVAILABLE:
+			sys.stdout.write(f'Merging TPM files and count files of all the samples')
+			sys.stdout.flush()
 		counttables = glob.glob(os.path.join(kallistodir, "*.tsv"))
 		count_data = {}
 		tpm_data = {}
@@ -1534,122 +1601,25 @@ def main(arguments):
 			gene_tpms = map_counts_to_genes(logger, transcript2gene, tpms)
 			count_data.update({ID: gene_counts})
 			tpm_data.update({ID: gene_tpms})
-
 		if countsfile:
 			generate_output_file(countsfile, count_data)
 		if tpmfile:
 			generate_output_file(tpmfile, tpm_data)
 
-		# Clean SRA, TMP folders for next batch
-		if '--sra' in arguments:
-			shutil.rmtree(sradir)
-			os.makedirs(sradir)
-			for subdir in glob.glob(os.path.join(tmpdir, "SRR*")):
-				shutil.rmtree(subdir)
-		batch_counter += 1
-
-	#code lines to merge the TPM/ Counts files
-	# Get all TPM files from input folder
-	patterns = ['*TPM*.txt', '*Counts*.txt']
-	for pattern in patterns:
-		search_pattern = os.path.join(kallistofinaldir, pattern)
-		files = sorted(glob.glob(search_pattern))
-
-		if not files:
-			logger.error(f"Error: No TPM/ counts files found in '{kallistofinaldir}'!")
-			logger.info(f"Searched for pattern: {search_pattern}")
-			sys.exit(1)
-
-		# Write combined output
-		if pattern == '*TPM*.txt':
-			unfiltered_output_file = os.path.join(tmpdir, f'{orgname}_unfiltered.tpms.tsv')
-			if os.path.exists(unfiltered_output_file):
-				continue
-			else:
-				logger.info("Merging TPM files from all batches")
-		elif pattern == '*Counts*.txt':
-			unfiltered_output_file = os.path.join(tmpdir, f'{orgname}_unfiltered.counts.tsv')
-			if os.path.exists(unfiltered_output_file):
-				break
-			else:
-				logger.info("Merging counts files from all batches")
-		logger.info(f"\nWriting combined file to {unfiltered_output_file}...")
-
-		logger.info(f"Input folder: {kallistofinaldir}")
-		logger.info(f"Output folder: {outdir}")
-		logger.info(f"Found {len(files)} files matching the pattern {pattern}")
-		logger.info(f"Processing: {', '.join([os.path.basename(f) for f in files[:3]])}{'...' if len(files) > 3 else ''}\n")
-
-		# Process first file to establish gene order
-		logger.info(f"[1/{len(files)}] Reading {os.path.basename(files[0])} (establishing gene order)...")
-		date1, sra_list, master_gene_data = read_tpm_file(files[0])
-		all_sra_accessions = sra_list.copy()
-		gene_order = list(master_gene_data.keys())  # Preserve gene order from first file
-
-		logger.info(f"  - Found {len(gene_order)} genes")
-		logger.info(f"  - Found {len(sra_list)} SRA samples")
-
-		# Process remaining files
-		for idx, tpm_file in enumerate(files[1:], start=2):
-			logger.info(f"[{idx}/{len(files)}] Processing {os.path.basename(tpm_file)}...")
-			date_info, sra_list, gene_data = read_tpm_file(tpm_file)
-			# Validation checks
-			if set(gene_data.keys()) != set(gene_order):
-				missing_in_new = set(gene_order) - set(gene_data.keys())
-				extra_in_new = set(gene_data.keys()) - set(gene_order)
-
-				if missing_in_new:
-					logger.warning(f"  WARNING: {len(missing_in_new)} genes missing in {os.path.basename(tpm_file)}")
-					logger.warning(f"    First 5 missing: {list(missing_in_new)[:5]}")
-				if extra_in_new:
-					logger.warning(f"  WARNING: {len(extra_in_new)} extra genes in {os.path.basename(tpm_file)}")
-					logger.warning(f"    First 5 extra: {list(extra_in_new)[:5]}")
-
-				# Handle missing genes by adding empty values
-				for gene in gene_order:
-					if gene not in gene_data:
-						gene_data[gene] = ['NA'] * len(sra_list)
-
-			# Add expression values to master data (in correct gene order)
-			for gene in gene_order:
-				if gene in gene_data:
-					master_gene_data[gene].extend(gene_data[gene])
-				else:
-					# Gene missing in this file - add NAs
-					master_gene_data[gene].extend(['NA'] * len(sra_list))
-
-			all_sra_accessions.extend(sra_list)
-			logger.info(f"  - Added {len(sra_list)} SRA samples")
-
-		with open(unfiltered_output_file, 'w') as out:
-			# Write header row
-			out.write('gene\t' + '\t'.join(all_sra_accessions) + '\n')
-
-			# Write gene expression data (in original gene order)
-			for gene in gene_order:
-				out.write(gene + '\t' + '\t'.join(master_gene_data[gene]) + '\n')
-
-		logger.info(f"\n Success!")
-		logger.info(f"  - Total genes: {len(gene_order)}")
-		logger.info(f"  - Total SRA samples before filtering: {len(all_sra_accessions)}")
-		logger.info(f"  - Unfiltered output file: {unfiltered_output_file}")
-
 	#code block to filter RNA-seq samples
 	filtered_tpm_file = os.path.join(outdir, f"{orgname}.tpms.tsv")
 	if not os.path.exists(filtered_tpm_file):
 		logger.info("Filtering the TPM expression file")
-		for f in os.listdir(tmpdir):
-			if 'tpms' in f:
-				unfiltered_tpm_file = os.path.join(tmpdir, f)
-			elif 'counts' in f:
-				unfiltered_counts_file = os.path.join(tmpdir, f)
+		if RICH_AVAILABLE:
+			sys.stdout.write(f'Filtering the TPM expression file')
+			sys.stdout.flush()
 		# --- run analysis of all data in folder/file --- #
 		doc_file = os.path.join(tmpdir,f'{orgname}_qc.doc')
 		valid_samples = []
 		with open(doc_file, "w") as out:
 			out.write("SampleName\tPercentageOfTop100\tPercentageOfTop500\tPercentageOfTop1000\n")
-			TPM_data, genes = load_all_TPMs(unfiltered_tpm_file)
-			count_data, genes = load_all_TPMs(unfiltered_counts_file)
+			TPM_data, genes = load_all_TPMs(tpmfile)
+			count_data, genes = load_all_TPMs(countsfile)
 			for key in sorted(list(TPM_data.keys())):
 				new_line = [key]
 				selection = sorted(TPM_data[key])
@@ -1682,6 +1652,11 @@ def main(arguments):
 
 		logger.info("number of valid sample: " + str(len(valid_samples)))
 		logger.info("number of invalid sample: " + str(len(TPM_data.keys()) - len(valid_samples)))
+		if RICH_AVAILABLE:
+			sys.stdout.write("number of valid sample: " + str(len(valid_samples)))
+			sys.stdout.flush()
+			sys.stdout.write("number of invalid sample: " + str(len(TPM_data.keys()) - len(valid_samples)))
+			sys.stdout.flush()
 
 		# --- generate output file --- #
 		if len(valid_samples) > 0:
@@ -1694,6 +1669,9 @@ def main(arguments):
 					out.write("\t".join(list(map(str, new_line))) + "\n")
 		else:
 			logger.error("WARNING: no valid samples in data set!")
+			if RICH_AVAILABLE:
+				sys.stdout.write(f'WARNING: no valid samples in data set!')
+				sys.stdout.flush()
 		# --- generate figure --- #
 		fig_file = os.path.join(tmpdir, f'{orgname}_qc.pdf')
 		values = []
@@ -1719,104 +1697,24 @@ def main(arguments):
 		fig.savefig(fig_file)
 		if remove_isoforms == 'no':
 			logger.info(f'Xpression_collector pipeline completed successfully!!!')
+			if RICH_AVAILABLE:
+				sys.stdout.write(f'Xpression_collector pipeline completed successfully!!!')
+				sys.stdout.flush()
 
 	#optional removal of isoforms
 	isoform_reduced_cds_file = outdir + f"{orgname}_repr.cds.fasta"
 	repr_output_spec = os.path.join(outdir, f'{orgname}_repr.pep.fasta')
 	repr_tpm_file = os.path.join(outdir, f'{orgname}_repr.tpms.tsv')
-	repr_counts_file = os.path.join(outdir, f'{orgname}_repr.counts.tsv')
 	if remove_isoforms == 'yes':
-		if os.path.exists(isoform_reduced_cds_file) and os.path.exists(repr_output_spec) and os.path.exists(repr_tpm_file) and os.path.exists(repr_counts_file):
+		if os.path.exists(isoform_reduced_cds_file) and os.path.exists(repr_output_spec) and os.path.exists(repr_tpm_file):
 			pass
 		else:
 			logger.info("Removing alternative isoforms")
-			# --- clean file --- #
-			clean_file = os.path.join(tmpdir, "clean.fasta")
-			seqs = load_fasta(cdsfile)
-			with open(clean_file, "w") as out:
-				for key in list(seqs.keys()):
-					out.write('>' + key + "\n" + seqs[key] + "\n")
+			if RICH_AVAILABLE:
+				sys.stdout.write(f"Removing alternative isoforms")
+				sys.stdout.flush()
 
-			# --- run BLAST vs self --- #
-			dbname = os.path.join(tmpdir, "blastdb")
-			blast_result_file = os.path.join(tmpdir, "blast_results.txt")
-			if not os.path.exists(blast_result_file):
-				cmd = f"{makeblastdb} -in " + clean_file + " -out " + dbname + " -dbtype nucl"
-				p = subprocess.Popen(args=cmd, shell=True)
-				p.communicate()
-
-				cmd = f"{blastn} -query " + clean_file + " -db " + dbname + " -out " + blast_result_file + " -outfmt 6 -evalue " + str(eval) + " -num_threads " + str(cores)
-				p = subprocess.Popen(args=cmd, shell=True)
-				p.communicate()
-			"""
-			elif aligner_tool == 'diamond':
-				cmd = diamond + ' makedb --in ' + clean_file + ' --db ' + dbname + ' --quiet '
-				p = subprocess.Popen(args=cmd, shell=True)
-				p.communicate()
-
-				cmd = diamond + ' blastn --db ' + dbname + ' --evalue ' + str(eval) + ' --query ' + clean_file + ' --out ' + blast_result_file + ' --outfmt 6 --quiet --ultra-sensitive --threads ' + str(cores)
-				p = subprocess.Popen(args=cmd, shell=True)
-				p.communicate()
-			"""
-
-			# --- identify good BLAST hits around sequences --- #
-			blast_hits = load_hits_per_bait(blast_result_file, scorecut, simcut, lencut)
-			black_list = {}
-			groups_to_analyze = []
-			for key in list(blast_hits.keys()):
-				try:
-					black_list[key]  # check if sequence ID is already assigned to group
-				except KeyError:
-					group = blast_hits[key] + [key]  # combine key with all good BLAST hits
-					if len(group) > 1:
-						groups_to_analyze.append(group)
-					for each in group:
-						black_list.update({each: None})
-			logger.info("number of groups to analyze: " + str(len(groups_to_analyze)))
-			single_fasta_folder = os.path.join(tmpdir, "single_fasta_input/")
-			if not os.path.exists(single_fasta_folder):
-				os.makedirs(single_fasta_folder)
-			for idx, group in enumerate(groups_to_analyze):
-				output_file_name = single_fasta_folder + str(idx + 1) + ".fasta"
-				if not os.path.isfile(output_file_name):
-					with open(output_file_name, "w") as out:
-						for ID in group:
-							out.write('>' + ID + "\n" + seqs[ID] + "\n")
-
-			# --- construct global alignment --- #
-			fasta_files = glob.glob(single_fasta_folder + "*.fasta")
-			for fasta in fasta_files:
-				if not os.path.isfile(fasta + ".aln"):
-					cmd = f"{mafft} --thread {cores} " + fasta + " > " + fasta + ".aln 2> " + fasta + ".doc.txt"
-					p = subprocess.Popen(args=cmd, shell=True)
-					p.communicate()
-
-			# --- calculate similarity matrix --- #
-			aln_fasta_files = glob.glob(single_fasta_folder + "*.fasta.aln")
-			logger.info("number of aligned FASTA files: " + str(len(aln_fasta_files)))
-			alignment_results = []
-			for aln_fasta in aln_fasta_files:
-				alignment = load_fasta(aln_fasta)
-				sim_per_aln = load_aln_similarity(alignment, snv_cutoff)
-				alignment_results.append(sim_per_aln)
-
-			# --- classify sequences as isoforms/paralogs --- #
-			isoforms = identify_isoforms(alignment_results, snv_cutoff)
-			logger.info("number of isoform groups: " + str(len(isoforms)))
-			repr_isoforms, repr_ids = identify_repr_isoform_per_group(logger, isoforms, seqs)
-			blacklist = {}
-			for ID in [x for sublist in isoforms for x in sublist]:
-				blacklist.update({ID: None})
-
-			# --- write isoform-reduced output file --- #
-			with open(isoform_reduced_cds_file, "w") as out:
-				for key in list(seqs.keys()):
-					try:
-						blacklist[key]
-					except KeyError:
-						out.write('>' + key + "\n" + seqs[key] + "\n")
-				for key in list(repr_isoforms.keys()):
-					out.write('>' + key + "\n" + seqs[key] + "\n")
+			repr_ids = isoform_clean(gff_file, cds_file, isoform_reduced_cds_file, child_attribute, child_parent_linker)
 
 			#code block to produce PEP file without isoforms
 			repr_input_spec = isoform_reduced_cds_file
@@ -1848,8 +1746,11 @@ def main(arguments):
 				translate_file(logger, in_file, pep_file, genetic_code, internal_stop_to_x=internal_stop_to_x)
 
 			#code block to produce TPM file without alternative isoforms
-			repr_tpm_filtered = keep_primary_transcript_exp(repr_ids, repr_tpm_file, repr_counts_file, isoform_reduced_cds_file, filtered_tpm_file)
+			repr_tpm_filtered = keep_primary_transcript_exp(repr_ids, repr_tpm_file, isoform_reduced_cds_file, filtered_tpm_file)
 			logger.info(f'Xpression_collector pipeline completed successfully!!!')
+			if RICH_AVAILABLE:
+				sys.stdout.write(f"Xpression_collector pipeline completed successfully!!!")
+				sys.stdout.flush()
 
 	# code block to merge filtered TPM file produced in this run with already existing filtered TPM files
 	try:
@@ -1864,20 +1765,40 @@ def main(arguments):
 		try:
 			merged_df = merge_expression_tsvs(filtered_tpm_file, merge_filtered_tpm)
 			merged_df.to_csv(merged_filtered_tpm_file, sep='\t', index=False)
-			print(f"Merge successful: {merged_df.shape[0]} genes x {merged_df.shape[1]} columns")
+			logger.info(f"Merge of currently produced TPM file and user supplied TPM file successful: {merged_df.shape[0]} genes x {merged_df.shape[1]} columns")
+			if RICH_AVAILABLE:
+				sys.stdout.write(f"Merge of currently produced TPM file and user supplied TPM file successful: {merged_df.shape[0]} genes x {merged_df.shape[1]} columns")
+				sys.stdout.flush()
+			logger.info(f'Xpression_collector pipeline completed successfully!!!')
+			if RICH_AVAILABLE:
+				sys.stdout.write(f"Xpression_collector pipeline completed successfully!!!")
+				sys.stdout.flush()
 		except ValueError as e:
-			print(f"Aborting merge:\n{e}")
+			logger.error(f"Aborting merge:\n{e}")
+			if RICH_AVAILABLE:
+				sys.stdout.write(f"Aborting merge:\n{e}")
+				sys.stdout.flush()
 	if merge_filtered_repr_tpm and remove_isoforms == 'yes':
 		try:
 			merged_df = merge_expression_tsvs(repr_tpm_filtered, merge_filtered_repr_tpm)
 			merged_df.to_csv(merged_filtered_repr_tpm_file, sep='\t', index=False)
-			print(f"Merge successful: {merged_df.shape[0]} genes x {merged_df.shape[1]} columns")
+			logger.info(f"Merge of currently produced TPM file and user supplied TPM file successful: {merged_df.shape[0]} genes x {merged_df.shape[1]} columns")
+			if RICH_AVAILABLE:
+				sys.stdout.write(f"Merge of currently produced TPM file and user supplied TPM file successful: {merged_df.shape[0]} genes x {merged_df.shape[1]} columns")
+				sys.stdout.flush()
+			logger.info(f'Xpression_collector pipeline completed successfully!!!')
+			if RICH_AVAILABLE:
+				sys.stdout.write(f"Xpression_collector pipeline completed successfully!!!")
+				sys.stdout.flush()
 		except ValueError as e:
-			print(f"Aborting merge:\n{e}")
+			logger.error(f"Aborting merge:\n{e}")
+			if RICH_AVAILABLE:
+				sys.stdout.write(f"Aborting merge:\n{e}")
+				sys.stdout.flush()
+	if clean_up=='yes':
+		shutil.rmtree(tmpdir)
 
 if '--sra' in sys.argv and '--cds' in sys.argv and '--out' in sys.argv:
-	main(sys.argv)
-elif '--readfiles' in sys.argv and '--cds' in sys.argv and '--out' in sys.argv:
 	main(sys.argv)
 else:
 	sys.exit(__usage__)
