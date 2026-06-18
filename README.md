@@ -26,6 +26,8 @@ Xpression_collector is a simple Python-based pipeline for fetching RNA-seq reads
 -> **v0.2 updates include**:
 
   -> buscolineage flag option entry has been simplified
+
+  -> The pipeline can be restarted now after disruptions
   
   -> SRA file fetching and kallisto runs take place in an interleaved manner improving processing time
   
