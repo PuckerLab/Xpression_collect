@@ -96,9 +96,8 @@ def update_status(accession, stage):
 	with status_lock:
 		status[accession] = stage
 
-
 def build_dashboard():
-	table = Table(title="Xpression Collector Live Status")
+	table = Table(title="Xpression_collector Live Status")
 	table.add_column("Accession")
 	table.add_column("Stage")
 
@@ -109,15 +108,16 @@ def build_dashboard():
 			"prefetch failed": "red",
 			"fasterq-dump & pigz": "yellow",
 			"fasterq-dump & pigz failed": "red",
-			"kallisto": "green",
-			"kallisto failed": "red"
+			"kallisto": "magenta",
+			"kallisto failed": "red",
+			"completed": "green"  # ← add this
 		}.get(stage, "white")
 		table.add_row(accession, f"[{color}]{stage}[/{color}]")
 
 	# --- compute summary counts from status dictionary ---
-	fully_completed = sum(1 for stage in status.values() if stage == "kallisto")
+	fully_completed = sum(1 for stage in status.values() if stage == "completed")
 	failed_count = sum(1 for stage in status.values() if "failed" in stage)
-	in_progress = sum(1 for stage in status.values() if stage not in ["kallisto"] and "failed" not in stage)
+	in_progress = sum(1 for stage in status.values() if stage != "completed" and "failed" not in stage)
 
 	# --- summary row ---
 	table.add_row("---", "---")
@@ -615,7 +615,7 @@ def get_data_for_jobs_to_run(readfile_status, logger, read_file_folders, final_o
 				 'fin': final_result_file, "ID": ID})
 	return jobs_to_do
 
-def job_executer(accession, logger, jobs_to_run, kallisto, threads, kallisto_completed_accessions,failed_accessions_file,live_display):
+def job_executer(accession, logger, jobs_to_run, kallisto, threads, kallisto_completed_accessions,failed_accessions_file):
 	"""! @brief run all jobs in list """
 	try:
 		for idx, job in enumerate(jobs_to_run):
@@ -625,10 +625,10 @@ def job_executer(accession, logger, jobs_to_run, kallisto, threads, kallisto_com
 				cmd2 = " ".join([kallisto, "quant", "--index=" + job['index'], "--output-dir=" + job['out'], "--threads " + str(threads), job['r1'], job['r2']])
 			else:
 				cmd2 = " ".join([kallisto, "quant", "--index=" + job['index'], "--single -l 200 -s 100", "--output-dir=" + job['out'], "--threads " + str(threads), job['r1']])
-			p = subprocess.Popen(args=cmd2, shell=True)
+			p = subprocess.Popen(args=cmd2, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 			p.communicate()
 
-			p = subprocess.Popen(args="cp " + job["tmp"] + " " + job["fin"], shell=True)
+			p = subprocess.Popen(args="cp " + job["tmp"] + " " + job["fin"], shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 			p.communicate()
 		if p.returncode !=0:
 			with open(failed_accessions_file, 'a') as out:
@@ -641,10 +641,9 @@ def job_executer(accession, logger, jobs_to_run, kallisto, threads, kallisto_com
 				out.write(f'{accession}\n')
 				out.flush()
 				os.fsync(out.fileno())
+			update_status(accession, "completed")
 	except RuntimeError as e:
-		if live_display:
-			update_status(accession, "kallisto failed")
-			live_display.update(build_dashboard())
+		update_status(accession, "kallisto failed")
 		logger.error(f"Kallisto quantification did not complete successfully for {accession}")
 
 #functions to merge the TPM. Counts files per batch
@@ -1036,7 +1035,7 @@ def isoform_clean(gff3_input_file, cds_file, no_trans_cds, child_attribute, chil
 	return repr_ids
 
 # function to perform kallisto quantification as soon as SRA file is fetched
-def fasterqdump_kallisto_worker(fasterqpigz_completed_accessions, kallisto_completed_accessions, index_file, sradir, readfile_status, logger, kallistodir, kallisto, cores,tmpdir, fasterq_dump, attempts, base_wait, failed_accessions_file,fasterqpigz_completed_accessions_file,kallisto_completed_accessions_file,live_display):
+def fasterqdump_kallisto_worker(fasterqpigz_completed_accessions, kallisto_completed_accessions, index_file, sradir, readfile_status, logger, kallistodir, kallisto, cores,tmpdir, fasterq_dump, attempts, base_wait, failed_accessions_file,fasterqpigz_completed_accessions_file,kallisto_completed_accessions_file):
 	while True:
 		accession = kallisto_queue.get()
 		if accession is barrier:
@@ -1045,14 +1044,12 @@ def fasterqdump_kallisto_worker(fasterqpigz_completed_accessions, kallisto_compl
 		prefetched_file = os.path.join(acc_dir, f"{accession}.sra")
 		# Run fasterq-dump and Kallisto
 		if accession not in fasterqpigz_completed_accessions:
-			if live_display:
-				update_status(accession, "fasterq-dump & pigz")
-				live_display.update(build_dashboard())
+			update_status(accession, "fasterq-dump & pigz")
 			for attempt in range(attempts):
 				try:
 					# fasterq-dump
 					cmd = f"{fasterq_dump} --split-3 --outdir {acc_dir} --skip-technical --threads {cores} {prefetched_file}"
-					fasterq_dump_result = subprocess.run(cmd, shell=True)
+					fasterq_dump_result = subprocess.run(cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 					if fasterq_dump_result.returncode != 0:
 						raise RuntimeError(f"fasterq-dump failed for {accession} with error code {fasterq_dump_result.returncode}")
 
@@ -1067,7 +1064,7 @@ def fasterqdump_kallisto_worker(fasterqpigz_completed_accessions, kallisto_compl
 					pigz_result = None
 					if fq_files:
 						cmd = f"pigz -p {cores} " + " ".join(fq_files)
-						pigz_result = subprocess.run(cmd, shell=True)
+						pigz_result = subprocess.run(cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 						if pigz_result.returncode != 0:
 							raise RuntimeError(f"pigz failed with code {pigz_result.returncode}")
 						# After pigz, check what was created
@@ -1099,9 +1096,7 @@ def fasterqdump_kallisto_worker(fasterqpigz_completed_accessions, kallisto_compl
 						logger.info(f"Retrying {accession} in {wait}s")
 						time.sleep(wait)
 					else:
-						if live_display:
-							update_status(accession, "faster-dump & pigz failed")
-							live_display.update(build_dashboard())
+						update_status(accession, "faster-dump & pigz failed")
 						logger.error(f"All attempts exhausted for {accession}, marking as failed")
 						with open(failed_accessions_file, 'a') as out:
 							out.write(f'{accession}\n')
@@ -1109,9 +1104,7 @@ def fasterqdump_kallisto_worker(fasterqpigz_completed_accessions, kallisto_compl
 							os.fsync(out.fileno())
 
 		if accession not in kallisto_completed_accessions:
-			if live_display:
-				update_status(accession, "kallisto")
-				live_display.update(build_dashboard())
+			update_status(accession, "kallisto")
 			# --- load data --- #
 			acc_dir = os.path.join(sradir, accession)
 			single_read_file_folders = [acc_dir]
@@ -1122,17 +1115,15 @@ def fasterqdump_kallisto_worker(fasterqpigz_completed_accessions, kallisto_compl
 			logger.info("Number of jobs to run: " + str(len(jobs_to_run)) + "\n")
 
 			# --- run jobs --- #
-			job_executer(accession, logger, jobs_to_run, kallisto, cores, kallisto_completed_accessions_file,failed_accessions_file,live_display)
+			job_executer(accession, logger, jobs_to_run, kallisto, cores, kallisto_completed_accessions_file,failed_accessions_file)
 			#remove the accession SRA folder after kallisto is completed for that accession
 			shutil.rmtree(acc_dir)
 		kallisto_queue.task_done()
 
 #function to control fetching of SRA files through parallelized prefetch
-def parallel_prefetch(prefetch_completed_accessions, accession, attempts,sradir, prefetch_command, minimum_sra_file_size_threshold, base_wait, failed_accessions_file, prefetch_completed_accessions_file, logger,live_display):
+def parallel_prefetch(prefetch_completed_accessions, accession, attempts,sradir, prefetch_command, minimum_sra_file_size_threshold, base_wait, failed_accessions_file, prefetch_completed_accessions_file, logger):
 	if accession not in prefetch_completed_accessions:
-		if live_display:
-			update_status(accession, "prefetch")
-			live_display.update(build_dashboard())
+		update_status(accession, "prefetch")
 		for attempt in range(attempts):
 			# Create subfolder for this accession
 			acc_dir = os.path.join(sradir, accession)
@@ -1142,7 +1133,7 @@ def parallel_prefetch(prefetch_completed_accessions, accession, attempts,sradir,
 			prefetched_file = os.path.join(acc_dir, f"{accession}.sra")
 			try:
 				cmd = f"{prefetch_command} --max-size 200G {accession} -O {sradir}"
-				prefetch_result = subprocess.run(cmd, shell=True)
+				prefetch_result = subprocess.run(cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 				if prefetch_result.returncode != 0:  # if prefetch fails due to issues lik network disruption
 					raise RuntimeError(f"prefetch for {accession} failed with code {prefetch_result.returncode}")
 				if not os.path.exists(prefetched_file):  # if prefetch did not fetch an SRA file in the first place
@@ -1167,9 +1158,7 @@ def parallel_prefetch(prefetch_completed_accessions, accession, attempts,sradir,
 					logger.info(f"Retrying {accession} in {wait}s")
 					time.sleep(wait)
 				else:
-					if live_display:
-						update_status(accession, "prefetch failed")
-						live_display.update(build_dashboard())
+					update_status(accession, "prefetch failed")
 					logger.error(f"All attempts exhausted for {accession}, marking as failed")
 					with open(failed_accessions_file, 'a') as out:
 						out.write(f'{accession}\n')
@@ -1544,39 +1533,44 @@ def main(arguments):
 	if not os.path.isfile(index_file):
 		logger.info("Starting Kallisto indexing")
 		cmd1 = " ".join([kallisto, "index", "--index=" + index_file, "--make-unique", cds_file])
-		p = subprocess.Popen(args=cmd1, shell=True)
+		p = subprocess.Popen(args=cmd1, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 		p.communicate()
 
 	if RICH_AVAILABLE:
-		live_display = Live(build_dashboard(), refresh_per_second=2)
-		live_display.start()
+		command = Live(build_dashboard(), refresh_per_second=2)
 	else:
-		live_display = None
+		from contextlib import nullcontext
+		command = nullcontext(None)
 
-	fk_thread = Thread(target=fasterqdump_kallisto_worker, args=(fasterqpigz_completed_accessions, kallisto_completed_accessions, index_file, sradir, readfile_status, logger, kallistodir, kallisto, cores,tmpdir, fasterq_dump, attempts, base_wait, failed_accessions_file,fasterqpigz_completed_accessions_file,kallisto_completed_accessions_file,live_display))
-	fk_thread.start()
+	with command as live_display:
+		fk_thread = Thread(target=fasterqdump_kallisto_worker, args=(fasterqpigz_completed_accessions, kallisto_completed_accessions, index_file, sradir, readfile_status, logger, kallistodir, kallisto, cores,tmpdir, fasterq_dump, attempts, base_wait, failed_accessions_file,fasterqpigz_completed_accessions_file,kallisto_completed_accessions_file))
+		fk_thread.start()
 
-	# keep active prefetch threads = batch dynamically
-	active_prefetch_threads = []
-	for accession in sra_accessions:
-		# wait if batch prefetches are already running
-		while len([t for t in active_prefetch_threads if t.is_alive()]) >= batch_size:
-			time.sleep(5)  # check every 5 seconds
+		# keep active prefetch threads = batch dynamically
+		active_prefetch_threads = []
+		for accession in sra_accessions:
+			# wait if batch prefetches are already running
+			while len([t for t in active_prefetch_threads if t.is_alive()]) >= batch_size:
+				live_display.update(build_dashboard())  #refresh while waiting
+				time.sleep(5)  # check every 5 seconds
 
-		# clean up finished threads
-		active_prefetch_threads = [t for t in active_prefetch_threads if t.is_alive()]
-		# start new prefetch thread for this accession
-		t = Thread(target=parallel_prefetch, args=(prefetch_completed_accessions, accession, attempts,sradir, prefetch_command, minimum_sra_file_size_threshold, base_wait, failed_accessions_file, prefetch_completed_accessions_file, logger,live_display))
-		t.start()
-		active_prefetch_threads.append(t)
+			# clean up finished threads
+			active_prefetch_threads = [t for t in active_prefetch_threads if t.is_alive()]
+			# start new prefetch thread for this accession
+			t = Thread(target=parallel_prefetch, args=(prefetch_completed_accessions, accession, attempts,sradir, prefetch_command, minimum_sra_file_size_threshold, base_wait, failed_accessions_file, prefetch_completed_accessions_file, logger))
+			t.start()
+			active_prefetch_threads.append(t)
+			live_display.update(build_dashboard())  # refresh after starting new thread
 
-	# wait for all remaining prefetch threads to finish
-	for t in active_prefetch_threads:
-		t.join()
+		# wait for all remaining prefetch threads to finish
+		for t in active_prefetch_threads:
+			t.join()
+			live_display.update(build_dashboard())  # refresh as each prefetch finishes
 
-	# signal fasterq+kallisto consumer that no more accessions are coming
-	kallisto_queue.put(barrier)
-	fk_thread.join()  # wait for last Kallisto to finish before merge step
+		# signal fasterq+kallisto consumer that no more accessions are coming
+		kallisto_queue.put(barrier)
+		fk_thread.join()  # wait for last Kallisto to finish before merge step
+		live_display.update(build_dashboard())  # final refresh
 
 	# Merge the TPM, Counts of SRA samples into a single TPM, Counts file respectively
 	tpmfile = os.path.join(kallistofinaldir, f'{orgname}_unfiltered.tpms.tsv')
