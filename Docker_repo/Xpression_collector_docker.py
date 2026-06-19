@@ -625,8 +625,10 @@ def job_executer(accession, logger, jobs_to_run, kallisto, threads, kallisto_com
 				cmd2 = " ".join([kallisto, "quant", "--index=" + job['index'], "--output-dir=" + job['out'], "--threads " + str(threads), job['r1'], job['r2']])
 			else:
 				cmd2 = " ".join([kallisto, "quant", "--index=" + job['index'], "--single -l 200 -s 100", "--output-dir=" + job['out'], "--threads " + str(threads), job['r1']])
-			p = subprocess.Popen(args=cmd2, shell=True, stdout=subprocess_log, stderr=subprocess_log)
-			p.communicate()
+			result = subprocess.run(cmd2, shell=True, capture_output=True, text=True)
+			output = (result.stdout + result.stderr).replace('\r', '\n')
+			subprocess_log.write(output)
+			subprocess_log.flush()
 
 			p = subprocess.Popen(args="cp " + job["tmp"] + " " + job["fin"], shell=True, stdout=subprocess_log, stderr=subprocess_log)
 			p.communicate()
@@ -1233,7 +1235,7 @@ def main(arguments):
 		container_path = "NA"
 
 	if '--organism_type' in arguments:
-		org_type = arguments[arguments.index('--organism_type')+1]
+		org_type = arguments[arguments.index('--organism_type') + 1]
 	else:
 		org_type = 'eukaryote'
 
