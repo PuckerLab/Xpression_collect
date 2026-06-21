@@ -1195,7 +1195,7 @@ def main(arguments):
 	else:
 		pattern_names_list = ["_pass_1", "_pass_2"]
 
-	cdsfile = arguments[arguments.index('--cds')+1]#full path to CDS file
+	cds_file = arguments[arguments.index('--cds')+1]#full path to CDS file
 
 	if '--annotation_qc' in arguments:# yes or no for BUSCO-based QC of the PEP file
 		qc = arguments[arguments.index('--annotation_qc')+1]
@@ -1253,8 +1253,6 @@ def main(arguments):
 		prefetch_command = arguments[arguments.index('--prefetch') + 1]
 	else:
 		prefetch_command = "/tools/sratoolkit/bin/prefetch"
-
-	cds_file = arguments[arguments.index('--cds')+1]
 
 	if '--threads' in arguments:
 		cores = int(arguments[arguments.index('--threads')+1])
@@ -1379,7 +1377,7 @@ def main(arguments):
 
 	#code block to obtain PEP file from CDS file
 
-	input_spec = cdsfile
+	input_spec = cds_file
 	output_spec = os.path.join(outdir,f'{orgname}.pep.fasta')
 	internal_stop_to_x = ('--internal-stop-to-x' in arguments)
 
