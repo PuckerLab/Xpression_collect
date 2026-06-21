@@ -45,6 +45,8 @@ ENV PATH="$CONDA_DIR/bin:$PATH"
 RUN conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main && \
     conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r
 
+RUN conda config --system --set plugins.use_sharded_repodata false
+
 # Install zstandard in base conda env to suppress warnings
 RUN conda install -n base -c conda-forge zstandard -y
 
