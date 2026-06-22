@@ -104,6 +104,11 @@ OPTIONAL:
 
 --sample_name          STR     Name of the species; default is sample
 
+--gff                  STR     Full path to GFF file if isoform removal needs to be performed
+
+--gff_config           STR      Full path to GFF config file specifying the different GFF attributes - child_attribute, child_parent_linker, parent_attribute;
+                                default attributes are ID, Parent, ID respectively
+
 --min_sra_file_size    INT    Minimum file size cutoff in MB to check prefetched SRA file sizes to cath sralite files; default cutoff is 1MB
 
 --annotation_qc        STR     yes or no for BUSCO-based QC of the PEP file; default is yes
