@@ -182,7 +182,22 @@ OPTIONAL:
 
 -> Alternative isoforms removal needs the GFF file to be given along with the CDS file and it is important for the CDS FASTA headers and the transcript identifiers in the GFF file to match to process without errors
   
--> Detailed guidelines on preparing the config file for --gff_config flag can be found in https://github.com/ShakNat/DupyliCate
+-> Detailed guidelines on preparing the config file for --gff_config flag are:
+
+    The GFF config TXT file is a simple tab separated TXT file that:
+					
+          Needs 3 columns in the order
+
+					(i) child_attribute: attribute field of the mRNA or transcript feature in the file like ID
+
+					(ii) child_parent_linker: attribute field of the mRNA or transcript, CDS, exon features that link them with their 
+					respective parent feature like Parent - Note: base assumption by the tool is that all child levels
+					have the same child-parent linker attribute fields. 
+          
+                    For eg., if Parent is the child-parent linker in the mRNA feature line,
+                    then Parent will be the child-parent linker for all other child-level feature lines in the GFF
+
+					(iii) parent_attribute: attribute field of the gene feature like ID
 
 -> In case the headers in your CDS file are formatted differently when compared to the transcript identifiers in the GFF file supplied, you can use a helper called Fasta_fix.py to tackle this issue. The helper script and its detailed usage can be found in https://github.com/ShakNat/DupyliCate
 
