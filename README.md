@@ -19,6 +19,14 @@ Xpression_collector is a simple Python-based pipeline for fetching RNA-seq reads
 
 <h2>📢 News & Updates</h2>
 
+-> **v0.2.1. is out and is the latest stable release!**
+
+-> **v0.2.1 major changes include**:
+
+  -> Modified isoform removal to handle multi-line FASTA files
+
+  -> Added compressed file processing support to multi-line FASTA file handling function
+
 -> **v0.2 is out and is the latest stable release!**
 
 -> **v0.2 updates include**:
