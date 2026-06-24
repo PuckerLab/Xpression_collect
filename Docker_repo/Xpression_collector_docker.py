@@ -1,7 +1,7 @@
 ### Shakunthala Natarajan ###
 ### bug reports: s64snata@uni-bonn.de ###
 
-__version__=0.2
+__version__= "0.2.1"
 __usage__="""
 			python3 Xpression_collector.py
 			--cds <Full path to CDS file>
