@@ -122,6 +122,8 @@ conda config --set solver libmamba
 
 solver: libmamba
 
+#Then continue with the installation as follows:
+
 conda env create -f environment.yml
 
 conda activate xpression_collector
