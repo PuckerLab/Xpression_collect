@@ -101,7 +101,31 @@ conda env create -f environment.yml
 
 conda activate xpression_collector
 ```
+If your package metadata collection or environment solving steps are taking long, follow the below steps:
 
+```
+git clone https://github.com/PuckerLab/Xpression_collect
+
+cd Xpression_collect
+
+conda update -n base conda-libmamba-solver libmamba libmambapy
+
+#Check for the solver
+conda config --show-sources
+
+#If it shows solver: classic
+#Do the following:
+
+conda config --set solver libmamba
+
+#Check again. It should show:
+
+solver: libmamba
+
+conda env create -f environment.yml
+
+conda activate xpression_collector
+```
 
 ## Running the pipeline
 
