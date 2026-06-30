@@ -88,6 +88,21 @@ conda env create -f environment.yml
 conda activate xpression_collector
 ```
 
+If you have a fresh install of conda, please follow the below steps:
+
+```
+git clone https://github.com/PuckerLab/Xpression_collect
+
+cd Xpression_collect
+
+conda update -n base conda-libmamba-solver libmamba libmambapy
+
+conda env create -f environment.yml
+
+conda activate xpression_collector
+```
+
+
 ## Running the pipeline
 
 ```
