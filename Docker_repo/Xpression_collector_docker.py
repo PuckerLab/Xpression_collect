@@ -1020,7 +1020,7 @@ def fasterqdump_kallisto_worker(fasterqpigz_completed_accessions, kallisto_compl
 			for attempt in range(attempts):
 				try:
 					# fasterq-dump
-					cmd = f"{fasterq_dump} --split-3 --outdir {acc_dir} --skip-technical --threads {cores} {prefetched_file}"
+					cmd = f"{fasterq_dump} --split-3 -t {tmpdir} --outdir {acc_dir} --skip-technical --threads {cores} {prefetched_file}"
 					fasterq_dump_result = subprocess.run(cmd, shell=True, stdout=subprocess_log, stderr=subprocess_log)
 					if fasterq_dump_result.returncode != 0:
 						raise RuntimeError(f"fasterq-dump failed for {accession} with error code {fasterq_dump_result.returncode}")
