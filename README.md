@@ -111,7 +111,7 @@ cd Xpression_collect
 conda update -n base conda-libmamba-solver libmamba libmambapy
 
 #Check for the solver
-conda config --show-sources
+conda config --show solver
 
 #If it shows solver: classic
 #Do the following:
