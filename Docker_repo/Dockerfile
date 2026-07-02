@@ -60,7 +60,7 @@ RUN mkdir -p /tools /data/sra_cache && \
 # Create dedicated conda env for your Python script + tools
 RUN conda create -p /tools/xpcollect_env python=3.12.7 -y && \
     conda install -p /tools/xpcollect_env -c conda-forge -c bioconda \
-        busco=6.0.0 \
+        busco=6.1.0 \
         kallisto \
         perl-sort-naturally \
         perl-clone \
