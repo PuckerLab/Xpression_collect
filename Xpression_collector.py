@@ -1,7 +1,7 @@
 ### Shakunthala Natarajan ###
 ### bug reports: s64snata@uni-bonn.de ###
 
-__version__= "0.2.1" #latest version
+__version__= "0.2.2" #latest version
 __usage__="""
 			python3 Xpression_collector.py
 			--cds <Full path to CDS file>
@@ -633,6 +633,8 @@ def get_data_for_jobs_to_run(readfile_status, logger, read_file_folders, final_o
 
 def job_executer(accession, logger, jobs_to_run, kallisto, threads, kallisto_completed_accessions,failed_accessions_file,subprocess_log):
 	"""! @brief run all jobs in list """
+	result=None
+	p=None
 	try:
 		for idx, job in enumerate(jobs_to_run):
 			logger.info("running job " + str(idx + 1) + "/" + str(len(jobs_to_run)) + " - " + job["ID"] + "\n")
@@ -648,18 +650,25 @@ def job_executer(accession, logger, jobs_to_run, kallisto, threads, kallisto_com
 
 			p = subprocess.Popen(args="cp " + job["tmp"] + " " + job["fin"], shell=True, stdout=subprocess_log, stderr=subprocess_log)
 			p.communicate()
-		if p.returncode !=0:
+		if result is not None and p is not None:
+			if result.returncode!=0 or p.returncode !=0:
+				with open(failed_accessions_file, 'a') as out:
+					out.write(f'{accession}\n')
+					out.flush()
+					os.fsync(out.fileno())
+				raise RuntimeError(f"Kallisto quantification did not complete successfully for {accession}")
+			else:
+				with open(kallisto_completed_accessions, 'a') as out:
+					out.write(f'{accession}\n')
+					out.flush()
+					os.fsync(out.fileno())
+				update_status(accession, "completed")
+		else:
 			with open(failed_accessions_file, 'a') as out:
 				out.write(f'{accession}\n')
 				out.flush()
 				os.fsync(out.fileno())
-			raise RuntimeError(f"Kallisto quantification did not complete successfully for {accession}")
-		else:
-			with open(kallisto_completed_accessions, 'a') as out:
-				out.write(f'{accession}\n')
-				out.flush()
-				os.fsync(out.fileno())
-			update_status(accession, "completed")
+			logger.error(f"No kallisto job has been run. Potential upstream error.")
 	except RuntimeError as e:
 		update_status(accession, "kallisto failed")
 		logger.error(f"Kallisto quantification did not complete successfully for {accession}")
@@ -1020,7 +1029,7 @@ def fasterqdump_kallisto_worker(fasterqpigz_completed_accessions, kallisto_compl
 			for attempt in range(attempts):
 				try:
 					# fasterq-dump
-					cmd = f"{fasterq_dump} --split-3 --outdir {acc_dir} --skip-technical --threads {cores} {prefetched_file}"
+					cmd = f"{fasterq_dump} --split-3 -t {tmpdir} --outdir {acc_dir} --skip-technical --threads {cores} {prefetched_file}"
 					fasterq_dump_result = subprocess.run(cmd, shell=True, stdout=subprocess_log, stderr=subprocess_log)
 					if fasterq_dump_result.returncode != 0:
 						raise RuntimeError(f"fasterq-dump failed for {accession} with error code {fasterq_dump_result.returncode}")
@@ -1144,11 +1153,26 @@ def main(arguments):
 		orgname = 'sample'
 	if  '--sra' in arguments:#list of SRA accessions to be fetched from NCBI SRA
 		todo_sras = arguments[arguments.index('--sra')+1]
+		if os.path.isfile(todo_sras):
+			pass
+		else:
+			print('File with SRA accessions list missing. Exiting...')
+			sys.exit(__usage__)
 	if '--gff' in arguments:
 		gff_file=arguments[arguments.index('--gff')+1]
+		if os.path.isfile(gff_file):
+			pass
+		else:
+			print('GFF file missing. Exiting...')
+			sys.exit(__usage__)
 	# gff file config params
 	if '--gff_config' in arguments:
 		gff_config_file = arguments[arguments.index('--gff_config') + 1]
+		if os.path.isfile(gff_config_file):
+			pass
+		else:
+			print('GFF config file missing. Exiting...')
+			sys.exit(__usage__)
 		with open(gff_config_file, 'r') as f:
 			for line in f:
 				parts = line.strip().split()
@@ -1166,6 +1190,11 @@ def main(arguments):
 		pattern_names_list = ["_pass_1", "_pass_2"]
 
 	cds_file = arguments[arguments.index('--cds')+1]#full path to CDS file
+	if os.path.isfile(cds_file):
+		pass
+	else:
+		print('CDS file missing. Exiting...')
+		sys.exit(__usage__)
 
 	if '--annotation_qc' in arguments:# yes or no for BUSCO-based QC of the PEP file
 		qc = arguments[arguments.index('--annotation_qc')+1]
@@ -1187,7 +1216,7 @@ def main(arguments):
 	if '--busco_version' in arguments:
 		busco_version = arguments[arguments.index('--busco_version') + 1]
 	else:
-		busco_version = "v6.0.0"  # the most recent version of BUSCO at the time of writing this script
+		busco_version = "v6.1.0"  # the most recent version of BUSCO at the time of writing this script
 
 	if '--container_version' in arguments:
 		container_version = arguments[arguments.index('--container_version') + 1]
