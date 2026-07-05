@@ -1,7 +1,7 @@
 ### Shakunthala Natarajan ###
 ### bug reports: s64snata@uni-bonn.de ###
 
-__version__= "0.3" #latest version
+__version__= "0.3.0" #latest version
 __usage__="""
 			python3 Xpression_collector.py
 			--cds <Full path to CDS file>
@@ -1713,9 +1713,9 @@ def main(arguments):
 				sys.stdout.flush()
 
 	#optional removal of isoforms
-	isoform_reduced_cds_file = outdir + f"{orgname}_repr.cds.fasta"
-	repr_output_spec = os.path.join(outdir, f'{orgname}_repr.pep.fasta')
-	repr_tpm_file = os.path.join(outdir, f'{orgname}_repr.tpms.tsv')
+	isoform_reduced_cds_file = outdir + f"{orgname}.repr.cds.fasta"
+	repr_output_spec = os.path.join(outdir, f'{orgname}.repr.pep.fasta')
+	repr_tpm_file = os.path.join(outdir, f'{orgname}.repr.tpms.tsv')
 	if remove_isoforms == 'yes':
 		if os.path.exists(isoform_reduced_cds_file) and os.path.exists(repr_output_spec) and os.path.exists(repr_tpm_file):
 			pass
@@ -1767,10 +1767,10 @@ def main(arguments):
 	try:
 		timestr = time.strftime("%Y_%m_%d_")
 		merged_filtered_tpm_file = os.path.join(outdir, f'{timestr}_{orgname}_merged.tpms.tsv')
-		merged_filtered_repr_tpm_file = os.path.join(outdir, f'{timestr}_{orgname}_merged_repr.tpms.tsv')
+		merged_filtered_repr_tpm_file = os.path.join(outdir, f'{timestr}_{orgname}_merged.repr.tpms.tsv')
 	except ModuleNotFoundError:
 		merged_filtered_tpm_file = os.path.join(outdir, f'{orgname}_merged.tpms.tsv')
-		merged_filtered_repr_tpm_file = os.path.join(outdir, f'{orgname}_merged_repr.tpms.tsv')
+		merged_filtered_repr_tpm_file = os.path.join(outdir, f'{orgname}_merged.repr.tpms.tsv')
 
 	if merge_filtered_tpm:
 		try:
