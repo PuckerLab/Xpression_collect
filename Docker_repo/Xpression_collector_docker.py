@@ -1,7 +1,7 @@
 ### Shakunthala Natarajan ###
 ### bug reports: s64snata@uni-bonn.de ###
 
-__version__= "0.2.2"
+__version__= "0.3.0"
 __usage__="""
 			python3 Xpression_collector.py
 			--cds <Full path to CDS file>
@@ -128,6 +128,12 @@ def build_dashboard():
 		f"[cyan]in progress:{in_progress}[/cyan]"
 	)
 	return table
+
+#function to calculate disk usage
+def get_disk_usage_percent(path):
+	usage = shutil.disk_usage(path)
+	return (usage.used / usage.total) * 100
+
 def load_multiple_fasta_file(fasta_file):
 	"""Load all sequences from a (possibly wrapped) FASTA file into a dict."""
 	content = {}
@@ -1323,15 +1329,22 @@ def main(arguments):
 		console_handler.setFormatter(formatter)
 		logger.addHandler(console_handler)
 
-	if '--sra' in arguments:
-		sradir=os.path.join(outdir,'SRA')
-		if not os.path.exists(sradir):
-			os.makedirs(sradir)
 	tmpdir = os.path.join(outdir, 'TMP')
 	if not os.path.exists(tmpdir):
 		os.makedirs(tmpdir)
 		if tmpdir[-1] != '/':
 			tmpdir += "/"
+
+	if '--sra' in arguments:
+		sradir = os.path.join(tmpdir, 'SRA')
+		if not os.path.exists(sradir):
+			os.makedirs(sradir)
+
+	if '--storage_percentage' in arguments:#flag to obtain storage threshold percentage cutoff from the user to adjust queueing of parallel prefetched accessions according to available disk space
+		storage_threshold_percent = float(arguments[arguments.index('--storage_percentage')+1])
+	else:
+		storage_threshold_percent = 75.0
+
 	kallistofinaldir = os.path.join(outdir, 'Kallisto_run_final')
 	if not os.path.exists(kallistofinaldir):
 		os.makedirs(kallistofinaldir)
@@ -1553,7 +1566,7 @@ def main(arguments):
 		active_prefetch_threads = []
 		for accession in sra_accessions:
 			# wait if batch prefetches are already running
-			while len([t for t in active_prefetch_threads if t.is_alive()]) >= batch_size:
+			while ((len([t for t in active_prefetch_threads if t.is_alive()]) >= batch_size) or (float(get_disk_usage_percent(sradir)) >= storage_threshold_percent)):#when active threads or disk space of sradir is greater than the specified parallel_prefetch and storage threshold percent values, just wait and sleep every 5 secs while updating the display
 				live_display.update(build_dashboard())  #refresh while waiting
 				time.sleep(5)  # check every 5 seconds
 
@@ -1701,9 +1714,9 @@ def main(arguments):
 				sys.stdout.flush()
 
 	#optional removal of isoforms
-	isoform_reduced_cds_file = outdir + f"{orgname}_repr.cds.fasta"
-	repr_output_spec = os.path.join(outdir, f'{orgname}_repr.pep.fasta')
-	repr_tpm_file = os.path.join(outdir, f'{orgname}_repr.tpms.tsv')
+	isoform_reduced_cds_file = outdir + f"{orgname}.repr.cds.fasta"
+	repr_output_spec = os.path.join(outdir, f'{orgname}.repr.pep.fasta')
+	repr_tpm_file = os.path.join(outdir, f'{orgname}.repr.tpms.tsv')
 	if remove_isoforms == 'yes':
 		if os.path.exists(isoform_reduced_cds_file) and os.path.exists(repr_output_spec) and os.path.exists(repr_tpm_file):
 			pass
@@ -1755,10 +1768,10 @@ def main(arguments):
 	try:
 		timestr = time.strftime("%Y_%m_%d_")
 		merged_filtered_tpm_file = os.path.join(outdir, f'{timestr}_{orgname}_merged.tpms.tsv')
-		merged_filtered_repr_tpm_file = os.path.join(outdir, f'{timestr}_{orgname}_merged_repr.tpms.tsv')
+		merged_filtered_repr_tpm_file = os.path.join(outdir, f'{timestr}_{orgname}_merged.repr.tpms.tsv')
 	except ModuleNotFoundError:
 		merged_filtered_tpm_file = os.path.join(outdir, f'{orgname}_merged.tpms.tsv')
-		merged_filtered_repr_tpm_file = os.path.join(outdir, f'{orgname}_merged_repr.tpms.tsv')
+		merged_filtered_repr_tpm_file = os.path.join(outdir, f'{orgname}_merged.repr.tpms.tsv')
 
 	if merge_filtered_tpm:
 		try:
