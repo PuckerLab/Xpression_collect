@@ -19,6 +19,17 @@ Xpression_collector is a simple Python-based pipeline for fetching RNA-seq reads
 
 <h2>📢 News & Updates</h2>
 
+-> **v0.3.0 is out and is the latest stable release!**
+
+-> **v0.3.0 major changes include**:
+
+  -> The storage space available at your end will be checked 
+
+  -> Based on the storage and the number of parallel prefetches you specify the accessions queueing up after prefetch will be determined
+
+  -> By default the storage cutoff puts the queue to freeze if the storage exceeds 75% of your available disk space; 
+     This can be tuned with the --storage_percentage flag
+
 -> **v0.2.1. is out and is the latest stable release!**
 
 -> **v0.2.1 major changes include**:
@@ -166,6 +177,8 @@ OPTIONAL:
 
 --parallel_prefetch    STR     Number of SRA accessions to be prefetched parallely; default is 2
 
+--storage_percentage   FLOAT   Storage threshold percentage cutoff to adjust queueing of parallel prefetched accessions according to available disk space
+
 --attempts             STR     Number of attempts at prefetching and accession from SRA; default is just 1 attempt
 
 --wait                 STR     Base wait time for sleep in case of network delays for prefetch; Increases exponentially
@@ -174,6 +187,9 @@ OPTIONAL:
 --remove_isoforms      STR   Optional step to remove isoforms; yes or no; default is yes
 
 --merge_tpms           STR   Full path to config file containing the full paths to the filtered_tpm, and/or repr_filtered_tpms to be merged
+
+                             First column will have paths to filtered_tpm files one per line; Second column will have paths to filtered_repr_tpm
+                             files, one per line
 
 --min                  INT   Minimum percentage expression of top 100 genes
 
