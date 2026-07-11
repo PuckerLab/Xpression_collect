@@ -1563,13 +1563,29 @@ def main(arguments):
 		fk_thread.start()
 
 		# keep active prefetch threads = batch dynamically
-		active_prefetch_threads = []
-		for accession in sra_accessions:
-			# wait if batch prefetches are already running
-			while ((len([t for t in active_prefetch_threads if t.is_alive()]) >= batch_size) or (float(get_disk_usage_percent(sradir)) >= storage_threshold_percent)):#when active threads or disk space of sradir is greater than the specified parallel_prefetch and storage threshold percent values, just wait and sleep every 5 secs while updating the display
-				live_display.update(build_dashboard())  #refresh while waiting
-				time.sleep(5)  # check every 5 seconds
+		if prefetch_completed_accessions:
+			# Code block for resume/ restart for requeueing accessions
+			requeued_count = 0
+			accessions_needing_prefetch = []
+			for accession in sra_accessions:
+				if accession in kallisto_completed_accessions:
+					continue  # fully done already, nothing more to do
+				if accession in prefetch_completed_accessions:
+					kallisto_queue.put(accession)
+					requeued_count += 1
+				else:
+					accessions_needing_prefetch.append(accession)
+			logger.info(f"Resume: re-queued {requeued_count} accessions directly to kallisto stage.")
+		else:
+			# fresh run - nothing to filter for resuming with fasterq-dump and kallisto
+			accessions_needing_prefetch = sra_accessions
 
+		#only accessions that need a fresh prefetch go through the disk-gated loop
+		active_prefetch_threads = []
+		for accession in accessions_needing_prefetch:
+			while ((len([t for t in active_prefetch_threads if t.is_alive()]) >= batch_size) or (float(get_disk_usage_percent(sradir)) >= storage_threshold_percent)):
+				live_display.update(build_dashboard())
+				time.sleep(5)
 			# clean up finished threads
 			active_prefetch_threads = [t for t in active_prefetch_threads if t.is_alive()]
 			# start new prefetch thread for this accession
