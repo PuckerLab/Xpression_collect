@@ -1562,18 +1562,22 @@ def main(arguments):
 		fk_thread.start()
 
 		# keep active prefetch threads = batch dynamically
-		# Code block for resume/ restart for requeueing accessions
-		requeued_count = 0
-		accessions_needing_prefetch = []
-		for accession in sra_accessions:
-			if accession in kallisto_completed_accessions:
-				continue  # fully done already, nothing more to do
-			if accession in prefetch_completed_accessions:
-				kallisto_queue.put(accession)
-				requeued_count += 1
-			else:
-				accessions_needing_prefetch.append(accession)
-		logger.info(f"Resume: re-queued {requeued_count} accessions directly to kallisto stage.")
+		if prefetch_completed_accessions:
+			# Code block for resume/ restart for requeueing accessions
+			requeued_count = 0
+			accessions_needing_prefetch = []
+			for accession in sra_accessions:
+				if accession in kallisto_completed_accessions:
+					continue  # fully done already, nothing more to do
+				if accession in prefetch_completed_accessions:
+					kallisto_queue.put(accession)
+					requeued_count += 1
+				else:
+					accessions_needing_prefetch.append(accession)
+			logger.info(f"Resume: re-queued {requeued_count} accessions directly to kallisto stage.")
+		else:
+			# fresh run - nothing to filter for resuming with fasterq-dump and kallisto
+			accessions_needing_prefetch = sra_accessions
 
 		#only accessions that need a fresh prefetch go through the disk-gated loop
 		active_prefetch_threads = []
