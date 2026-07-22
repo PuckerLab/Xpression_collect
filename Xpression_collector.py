@@ -17,6 +17,7 @@ __usage__="""
 			--attempts <Number of attempts at prefetching and accession from SRA> default is just 1 attempt
 			--wait <Base wait time for sleep in case of network delays for prefetch; Increases exponentially with a base of 2 for each reattempt> default is 20 seconds
 			--remove_isoforms <Optional step to remove isoforms>< yes or no> default is yes
+			'--only_merge' <Inserting this flag triggers only tpm and repr tpm file merging and not the entire expression analysis run>
 			--merge_tpms <Full path to config file containing the full paths to the filtered_tpm, and/or repr_filtered_tpms to be merged>
 						 <First column will have paths to filtered_tpm files one per line; Second column will have paths to filtered_repr_tpm files one per line>
 			--min <Minimum percentage expression of top 100 genes>
@@ -721,7 +722,6 @@ def generate_mapping_table(logger, gff_file):
 def map_counts_to_genes(logger, transcript2gene, counts):
 	"""! @brief map transcript counts to parent genes """
 
-	error_collector = []
 	gene_counts = {}
 	for key in counts.keys():
 		try:
@@ -730,10 +730,7 @@ def map_counts_to_genes(logger, transcript2gene, counts):
 			try:
 				gene_counts.update({transcript2gene[key]: counts[key]})
 			except KeyError:
-				error_collector.append(key)
 				gene_counts.update({key: counts[key]})
-	if len(error_collector) > 0:
-		logger.info("number of unmapped transcripts: " + str(len(error_collector)) + "\n")
 	return gene_counts
 
 
@@ -749,6 +746,17 @@ def generate_output_file(output_file, data):
 			for sample in samples:
 				new_line.append(data[sample][gene])
 			out.write("\t".join(map(str, new_line)) + '\n')
+
+#function to merge and stack dataframes column-wise to obtain merged tpms, counts files
+def merge_samplewise_tpms_counts_files(folder, out_file):
+	files = glob.glob(os.path.join(folder, "*.tsv"))
+	dfs = []
+	for f in files:
+		df = pd.read_csv(f, sep='\t', index_col='gene')
+		dfs.append(df)
+	merged = pd.concat(dfs, axis=1, join='outer')#axis 1 stacks data column-wise, outer join retains all transcripts in the df and fills the missing ones with the value given for na_rep
+	merged.index.name = 'gene'
+	merged.to_csv(out_file, sep='\t')
 
 #function to read tpm/ counts TXT files for combining them
 def read_tpm_file(filename):
@@ -819,6 +827,7 @@ def keep_primary_transcript_exp(repr_ids, repr_tpm_file, primary_transcript_cds_
 				primary_transcripts.append(line[1:].strip())
 
 	df = pd.read_csv(exp_file, sep='\t', index_col='gene')
+	df = df.copy()#to avoid fragmentation of blocks in downstream processing
 	original_transcript_order = df.index.tolist()#obtaining the transcript order from the original file
 
 	result_rows = []
@@ -837,10 +846,10 @@ def keep_primary_transcript_exp(repr_ids, repr_tpm_file, primary_transcript_cds_
 	df_unmapped = df[~df.index.isin(all_mapped_transcripts)]#dataframe with transcripts not found in the repr_ids dic mapping
 
 	df_total = pd.concat([df_summed, df_unmapped])
-	df_total = df_total.reset_index()
+	df_total = df_total.copy()#de-fragmenting the df to avoid it from remaining fragmented in the subsequent ordering steps and increase efficiency of the merge
 	#preserving original transcript order in the isoform purged file
-	retained_order = [t for t in original_transcript_order if t in df_total['gene'].values]
-	df_total = df_total.set_index('gene').loc[retained_order].reset_index()
+	retained_order = [t for t in original_transcript_order if t in df_total.index]
+	df_total = df_total.loc[retained_order].reset_index()
 
 	if '.tpm' in exp_file:
 		df_total.to_csv(repr_tpm_file, sep="\t", index=False)
@@ -901,6 +910,7 @@ def merge_expression_tsvs(base_file, additional_files):
 
 	dfs = [pd.read_csv(f, sep='\t', index_col='gene') for f in all_files]
 	merged = reduce(lambda left, right: left.join(right, how='inner'), dfs)
+	merged = merged.copy()#to avoid fragmented dataframe warning
 	return merged.reset_index()
 
 #function for removing alternate transcripts from the peptide FASTA file
@@ -1370,6 +1380,11 @@ def main(arguments):
 	else:
 		minimum_sra_file_size_threshold = 1
 
+	if '--only_merge' in arguments:# inserting this flag triggers only tpm and repr tpm file merging and not the entire expression analysis run
+		standalone_merge = 'yes'
+	else:
+		standalone_merge = 'no'
+
 	merge_filtered_tpm= []
 	merge_filtered_repr_tpm = []
 	if '--merge_tpms' in arguments:#full path to config file containing the full paths to the filtered_tpm, and/or repr_filtered_tpms to be merged; first column will have paths to filtered_tpm files one per line; second column will have paths to filtered_repr_tpm files one per line
@@ -1509,105 +1524,112 @@ def main(arguments):
 				logger.info(f"BUSCO QC check completed.")
 		else:
 			logger.warning("BUSCO not found. No QC check possible.")
+	if standalone_merge == 'no':
+		#code block to record completed accessions to tackle internet and network disruption interruptions
+		completed_accessions = set()
+		prefetch_completed_accessions_file = os.path.join(tmpdir,'prefetch_completed_accession.txt')
+		fasterqpigz_completed_accessions_file = os.path.join(tmpdir,'fasterq-dump_pigz_completed_accession.txt')
+		kallisto_completed_accessions_file = os.path.join(tmpdir, 'kallisto_quant_completed_accessions.txt')
 
-	#code block to record completed accessions to tackle internet and network disruption interruptions
-	completed_accessions = set()
-	prefetch_completed_accessions_file = os.path.join(tmpdir,'prefetch_completed_accession.txt')
-	fasterqpigz_completed_accessions_file = os.path.join(tmpdir,'fasterq-dump_pigz_completed_accession.txt')
-	kallisto_completed_accessions_file = os.path.join(tmpdir, 'kallisto_quant_completed_accessions.txt')
+		failed_accessions_file = os.path.join(outdir,'failed_accessions.txt')
+		kallistodir=os.path.join(tmpdir,'Kallisto_abundances')
+		if not os.path.exists(kallistodir):
+			os.makedirs(kallistodir)
 
-	failed_accessions_file = os.path.join(outdir,'failed_accessions.txt')
-	kallistodir=os.path.join(tmpdir,'Kallisto_abundances')
-	if not os.path.exists(kallistodir):
-		os.makedirs(kallistodir)
+		prefetch_completed_accessions = set()
+		fasterqpigz_completed_accessions = set()
+		kallisto_completed_accessions = set()
 
-	prefetch_completed_accessions = set()
-	fasterqpigz_completed_accessions = set()
-	kallisto_completed_accessions = set()
+		if os.path.exists(prefetch_completed_accessions_file):
+			with open (prefetch_completed_accessions_file, 'r') as f:
+				prefetch_completed_accessions = set(line.strip() for line in f)
 
-	if os.path.exists(prefetch_completed_accessions_file):
-		with open (prefetch_completed_accessions_file, 'r') as f:
-			prefetch_completed_accessions = set(line.strip() for line in f)
+		if os.path.exists(fasterqpigz_completed_accessions_file):
+			with open (fasterqpigz_completed_accessions_file, 'r') as f:
+				fasterqpigz_completed_accessions = set(line.strip() for line in f)
 
-	if os.path.exists(fasterqpigz_completed_accessions_file):
-		with open (fasterqpigz_completed_accessions_file, 'r') as f:
-			fasterqpigz_completed_accessions = set(line.strip() for line in f)
+		if os.path.exists(kallisto_completed_accessions_file):
+			with open (kallisto_completed_accessions_file, 'r') as f:
+				kallisto_completed_accessions = set(line.strip() for line in f)
 
-	if os.path.exists(kallisto_completed_accessions_file):
-		with open (kallisto_completed_accessions_file, 'r') as f:
-			kallisto_completed_accessions = set(line.strip() for line in f)
+		# Clear failed accessions file at start of each run
+		with open(failed_accessions_file, 'w') as f:
+			pass
+		sra_accessions = [acc for acc in load_IDs(todo_sras)]
 
+		# create kallisto index file
+		index_file = os.path.join(tmpdir, "index")
+		if not os.path.isfile(index_file):
+			logger.info("Starting Kallisto indexing")
+			cmd1 = " ".join([kallisto, "index", "--index=" + index_file, "--make-unique", cds_file])
+			p = subprocess.Popen(args=cmd1, shell=True, stdout=subprocess_log, stderr=subprocess_log)
+			p.communicate()
 
-	# Clear failed accessions file at start of each run
-	with open(failed_accessions_file, 'w') as f:
-		pass
-	sra_accessions = [acc for acc in load_IDs(todo_sras)]
-
-	# create kallisto index file
-	index_file = os.path.join(tmpdir, "index")
-	if not os.path.isfile(index_file):
-		logger.info("Starting Kallisto indexing")
-		cmd1 = " ".join([kallisto, "index", "--index=" + index_file, "--make-unique", cds_file])
-		p = subprocess.Popen(args=cmd1, shell=True, stdout=subprocess_log, stderr=subprocess_log)
-		p.communicate()
-
-	if RICH_AVAILABLE:
-		command = Live(build_dashboard(), refresh_per_second=2)
-	else:
-		from contextlib import nullcontext
-		command = nullcontext(None)
-
-	with command as live_display:
-		fk_thread = Thread(target=fasterqdump_kallisto_worker, args=(fasterqpigz_completed_accessions, kallisto_completed_accessions, index_file, sradir, readfile_status, logger, kallistodir, kallisto, cores,tmpdir, fasterq_dump, attempts, base_wait, failed_accessions_file,fasterqpigz_completed_accessions_file,kallisto_completed_accessions_file,subprocess_log))
-		fk_thread.start()
-
-		# keep active prefetch threads = batch dynamically
-		if prefetch_completed_accessions:
-			# Code block for resume/ restart for requeueing accessions
-			requeued_count = 0
-			accessions_needing_prefetch = []
-			for accession in sra_accessions:
-				if accession in kallisto_completed_accessions:
-					continue  # fully done already, nothing more to do
-				if accession in prefetch_completed_accessions:
-					kallisto_queue.put(accession)
-					requeued_count += 1
-				else:
-					accessions_needing_prefetch.append(accession)
-			logger.info(f"Resume: re-queued {requeued_count} accessions directly to kallisto stage.")
+		if RICH_AVAILABLE:
+			command = Live(build_dashboard(), refresh_per_second=2)
 		else:
-			# fresh run - nothing to filter for resuming with fasterq-dump and kallisto
-			accessions_needing_prefetch = sra_accessions
+			from contextlib import nullcontext
+			command = nullcontext(None)
 
-		#only accessions that need a fresh prefetch go through the disk-gated loop
-		active_prefetch_threads = []
-		for accession in accessions_needing_prefetch:
-			while ((len([t for t in active_prefetch_threads if t.is_alive()]) >= batch_size) or (float(get_disk_usage_percent(sradir)) >= storage_threshold_percent)):
-				live_display.update(build_dashboard())
-				time.sleep(5)
-			# clean up finished threads
-			active_prefetch_threads = [t for t in active_prefetch_threads if t.is_alive()]
-			# start new prefetch thread for this accession
-			t = Thread(target=parallel_prefetch, args=(prefetch_completed_accessions, accession, attempts,sradir, prefetch_command, minimum_sra_file_size_threshold, base_wait, failed_accessions_file, prefetch_completed_accessions_file, logger,subprocess_log))
-			t.start()
-			active_prefetch_threads.append(t)
-			live_display.update(build_dashboard())  # refresh after starting new thread
+		with command as live_display:
+			fk_thread = Thread(target=fasterqdump_kallisto_worker, args=(fasterqpigz_completed_accessions, kallisto_completed_accessions, index_file, sradir, readfile_status, logger, kallistodir, kallisto, cores,tmpdir, fasterq_dump, attempts, base_wait, failed_accessions_file,fasterqpigz_completed_accessions_file,kallisto_completed_accessions_file,subprocess_log))
+			fk_thread.start()
 
-		# wait for all remaining prefetch threads to finish
-		for t in active_prefetch_threads:
-			t.join()
-			live_display.update(build_dashboard())  # refresh as each prefetch finishes
+			# keep active prefetch threads = batch dynamically
+			if prefetch_completed_accessions:
+				# Code block for resume/ restart for requeueing accessions
+				requeued_count = 0
+				accessions_needing_prefetch = []
+				for accession in sra_accessions:
+					if accession in kallisto_completed_accessions:
+						continue  # fully done already, nothing more to do
+					if accession in prefetch_completed_accessions:
+						kallisto_queue.put(accession)
+						requeued_count += 1
+					else:
+						accessions_needing_prefetch.append(accession)
+				logger.info(f"Resume: re-queued {requeued_count} accessions directly to kallisto stage.")
+			else:
+				# fresh run - nothing to filter for resuming with fasterq-dump and kallisto
+				accessions_needing_prefetch = sra_accessions
 
-		# signal fasterq+kallisto consumer that no more accessions are coming
-		kallisto_queue.put(barrier)
-		fk_thread.join()  # wait for last Kallisto to finish before merge step
-		live_display.update(build_dashboard())  # final refresh
+			#only accessions that need a fresh prefetch go through the disk-gated loop
+			active_prefetch_threads = []
+			for accession in accessions_needing_prefetch:
+				while ((len([t for t in active_prefetch_threads if t.is_alive()]) >= batch_size) or (float(get_disk_usage_percent(sradir)) >= storage_threshold_percent)):
+					live_display.update(build_dashboard())
+					time.sleep(5)
+				# clean up finished threads
+				active_prefetch_threads = [t for t in active_prefetch_threads if t.is_alive()]
+				# start new prefetch thread for this accession
+				t = Thread(target=parallel_prefetch, args=(prefetch_completed_accessions, accession, attempts,sradir, prefetch_command, minimum_sra_file_size_threshold, base_wait, failed_accessions_file, prefetch_completed_accessions_file, logger,subprocess_log))
+				t.start()
+				active_prefetch_threads.append(t)
+				live_display.update(build_dashboard())  # refresh after starting new thread
 
-	subprocess_log.close()#close the subprocess_log file handle since there are no subprocesses to be logged after this step
+			# wait for all remaining prefetch threads to finish
+			for t in active_prefetch_threads:
+				t.join()
+				live_display.update(build_dashboard())  # refresh as each prefetch finishes
+
+			# signal fasterq+kallisto consumer that no more accessions are coming
+			kallisto_queue.put(barrier)
+			fk_thread.join()  # wait for last Kallisto to finish before merge step
+			live_display.update(build_dashboard())  # final refresh
+
+		subprocess_log.close()#close the subprocess_log file handle since there are no subprocesses to be logged after this step
+
 
 	# Merge the TPM, Counts of SRA samples into a single TPM, Counts file respectively
 	tpmfile = os.path.join(kallistofinaldir, f'{orgname}_unfiltered.tpms.tsv')
 	countsfile = os.path.join(kallistofinaldir, f'{orgname}_unfiltered.counts.tsv')
+
+	temp_tpms_folder = os.path.join(tmpdir,'Temp_TPMS')
+	if not os.path.exists(temp_tpms_folder):
+		os.mkdir(temp_tpms_folder)
+	temp_counts_folder = os.path.join(tmpdir,'Temp_Counts')
+	if not os.path.exists(temp_counts_folder):
+		os.mkdir(temp_counts_folder)
 
 	if not (os.path.exists(tpmfile) and os.path.exists(countsfile)):
 		logger.info(f'Merging TPM files and count files of all the samples')
@@ -1626,12 +1648,21 @@ def main(arguments):
 			# TPM are available and could be processed in the same way
 			gene_counts = map_counts_to_genes(logger, transcript2gene, counts)
 			gene_tpms = map_counts_to_genes(logger, transcript2gene, tpms)
-			count_data.update({ID: gene_counts})
-			tpm_data.update({ID: gene_tpms})
-		if countsfile:
-			generate_output_file(countsfile, count_data)
-		if tpmfile:
-			generate_output_file(tpmfile, tpm_data)
+			sample_counts_file = os.path.join(temp_counts_folder, f'{ID}.counts.tsv')
+			sample_tpms_file = os.path.join(temp_tpms_folder, f'{ID}.tpms.tsv')
+
+			with open(sample_counts_file, "w") as out:
+				out.write("\t".join(['gene', ID]) + '\n')
+				out.write('\n'.join(f"{gene}\t{value}" for gene, value in gene_counts.items()))
+				out.write('\n')
+
+			with open(sample_tpms_file, "w") as out:
+				out.write("\t".join(['gene', ID]) + '\n')
+				out.write('\n'.join(f"{gene}\t{value}" for gene, value in gene_tpms.items()))
+				out.write('\n')
+
+		merge_samplewise_tpms_counts_files(temp_counts_folder, countsfile)
+		merge_samplewise_tpms_counts_files(temp_tpms_folder, tpmfile)
 
 	#code block to filter RNA-seq samples
 	filtered_tpm_file = os.path.join(outdir, f"{orgname}.tpms.tsv")
@@ -1781,7 +1812,7 @@ def main(arguments):
 
 	# code block to merge filtered TPM file produced in this run with already existing filtered TPM files
 	try:
-		timestr = time.strftime("%Y_%m_%d_")
+		timestr = time.strftime("%Y_%m_%d")
 		merged_filtered_tpm_file = os.path.join(outdir, f'{timestr}_{orgname}_merged.tpms.tsv')
 		merged_filtered_repr_tpm_file = os.path.join(outdir, f'{timestr}_{orgname}_merged.repr.tpms.tsv')
 	except ModuleNotFoundError:
@@ -1790,16 +1821,37 @@ def main(arguments):
 
 	if merge_filtered_tpm:
 		try:
-			merged_df = merge_expression_tsvs(filtered_tpm_file, merge_filtered_tpm)
-			merged_df.to_csv(merged_filtered_tpm_file, sep='\t', index=False)
-			logger.info(f"Merge of currently produced TPM file and user supplied TPM file successful: {merged_df.shape[0]} genes x {merged_df.shape[1]} columns")
-			if RICH_AVAILABLE:
-				sys.stdout.write(f"Merge of currently produced TPM file and user supplied TPM file successful: {merged_df.shape[0]} genes x {merged_df.shape[1]} columns")
-				sys.stdout.flush()
-			logger.info(f'Xpression_collector pipeline completed successfully!!!')
-			if RICH_AVAILABLE:
-				sys.stdout.write(f"Xpression_collector pipeline completed successfully!!!\n")
-				sys.stdout.flush()
+			if os.path.exists(filtered_tpm_file):
+				merged_df = merge_expression_tsvs(filtered_tpm_file, merge_filtered_tpm)
+				merged_df.to_csv(merged_filtered_tpm_file, sep='\t', index=False)
+				logger.info(f"Merge of currently produced TPM file and user supplied TPM file(s) successful: {merged_df.shape[0]} genes x {merged_df.shape[1]} samples")
+				if RICH_AVAILABLE:
+					sys.stdout.write(f"Merge of currently produced TPM file and user supplied TPM file successful: {merged_df.shape[0]} genes x {merged_df.shape[1]} samples\n")
+					sys.stdout.flush()
+			else:
+				if len(merge_filtered_tpm) > 1:
+					merged_df = merge_expression_tsvs(merge_filtered_tpm[0],merge_filtered_tpm[1:])
+					merged_df.to_csv(merged_filtered_tpm_file, sep='\t', index=False)
+					logger.warning(f"No valid expression file produced in this run for merge. Merged the other expression files input for merge.")
+					if RICH_AVAILABLE:
+						sys.stdout.write(f"No valid expression file produced in this run for merge. Merged the other expression files input for merge.\n")
+						sys.stdout.flush()
+					logger.info(f"Merge of user supplied TPM file(s) successful: {merged_df.shape[0]} genes x {merged_df.shape[1]} samples")
+					if RICH_AVAILABLE:
+						sys.stdout.write(f"Merge of user supplied TPM file(s) successful: {merged_df.shape[0]} genes x {merged_df.shape[1]} samples\n")
+						sys.stdout.flush()
+				else:
+					logger.error(f"No valid expression file produced in this run for merge.")
+					if RICH_AVAILABLE:
+						sys.stdout.write(f"No valid expression file produced in this run for merge.\n")
+						sys.stdout.flush()
+			if merge_filtered_repr_tpm:
+				pass
+			else:
+				logger.info(f'Xpression_collector pipeline completed successfully!!!')
+				if RICH_AVAILABLE:
+					sys.stdout.write(f"Xpression_collector pipeline completed successfully!!!\n")
+					sys.stdout.flush()
 		except ValueError as e:
 			logger.error(f"Aborting merge:\n{e}")
 			if RICH_AVAILABLE:
@@ -1807,12 +1859,30 @@ def main(arguments):
 				sys.stdout.flush()
 	if merge_filtered_repr_tpm and remove_isoforms == 'yes':
 		try:
-			merged_df = merge_expression_tsvs(repr_tpm_filtered, merge_filtered_repr_tpm)
-			merged_df.to_csv(merged_filtered_repr_tpm_file, sep='\t', index=False)
-			logger.info(f"Merge of currently produced TPM file and user supplied TPM file successful: {merged_df.shape[0]} genes x {merged_df.shape[1]} columns")
-			if RICH_AVAILABLE:
-				sys.stdout.write(f"Merge of currently produced TPM file and user supplied TPM file successful: {merged_df.shape[0]} genes x {merged_df.shape[1]} columns\n")
-				sys.stdout.flush()
+			if os.path.exists(repr_tpm_file):#repr_tpm_file and repr_tpm_filtered refer to the same isoform removed TPM file
+				merged_df = merge_expression_tsvs(repr_tpm_file, merge_filtered_repr_tpm)
+				merged_df.to_csv(merged_filtered_repr_tpm_file, sep='\t', index=False)
+				logger.info(f"Merge of currently produced representative (alternative transcripts-free) TPM file and user supplied repr TPM file(s) successful: {merged_df.shape[0]} genes x {merged_df.shape[1]} samples")
+				if RICH_AVAILABLE:
+					sys.stdout.write(f"Merge of currently produced representative (alternative transcripts-free) TPM file and user supplied repr TPM file(s) successful: {merged_df.shape[0]} genes x {merged_df.shape[1]} samples\n")
+					sys.stdout.flush()
+			else:
+				if len(merge_filtered_repr_tpm) > 1:
+					merged_df = merge_expression_tsvs(merge_filtered_repr_tpm[0],merge_filtered_repr_tpm[1:])
+					merged_df.to_csv(merged_filtered_repr_tpm_file, sep='\t', index=False)
+					logger.warning(f"No valid representative (alternative transcripts-free) expression file produced in this run for merge. Merged the other repr expression files input for merge.")
+					if RICH_AVAILABLE:
+						sys.stdout.write(f"No valid representative (alternative transcripts-free) expression file produced in this run for merge. Merged the other repr expression files input for merge.\n")
+						sys.stdout.flush()
+					logger.info(f"Merge of user supplied repr TPM file(s) successful: {merged_df.shape[0]} genes x {merged_df.shape[1]} samples")
+					if RICH_AVAILABLE:
+						sys.stdout.write(f"Merge of user supplied repr TPM file successful: {merged_df.shape[0]} genes x {merged_df.shape[1]} samples\n")
+						sys.stdout.flush()
+				else:
+					logger.error(f"No valid representative (alternative transcripts free) expression file produced in this run for merge.")
+					if RICH_AVAILABLE:
+						sys.stdout.write(f"No valid representative (alternative transcripts free) expression file produced in this run for merge.\n")
+						sys.stdout.flush()
 			logger.info(f'Xpression_collector pipeline completed successfully!!!')
 			if RICH_AVAILABLE:
 				sys.stdout.write(f"Xpression_collector pipeline completed successfully!!!\n")
