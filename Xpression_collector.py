@@ -1131,7 +1131,7 @@ def kingfisher_ena_fetch(fetch_fallback, prefetch_completed_accessions, fasterqp
 				shutil.rmtree(acc_dir)
 			os.makedirs(acc_dir, exist_ok=True)
 
-			cmd = f"{kingfisher} get -r {accession} -m ena-ftp --output-directory {acc_dir} -t {threads}"
+			cmd = f"{kingfisher} get -r {accession} -m ena-ftp --output-directory {acc_dir} --download-threads {threads}"
 			result = subprocess.run(cmd, shell=True, stdout=subprocess_log, stderr=subprocess_log)
 			if result.returncode != 0:
 				raise RuntimeError(f"kingfisher ena-ftp fetch failed for {accession} with code {result.returncode}")
