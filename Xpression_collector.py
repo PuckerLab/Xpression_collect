@@ -7,6 +7,9 @@ __usage__="""
 			--cds <Full path to CDS file>
 			--sample_name <Name of the sample you are analyzing>
 			--sra <Full path to TXT file with one SRA accession per line>
+			--fetch <Method of fetching the accessions> sratoolkit | kingfisher; default is sratoolkit
+			--fetch_fallback <Option to fallback to sratoolkit in case kingfisher ena-ftp is chosen as the fetch method> no by default
+			--kingfisher <Full path to kingfisher executable>
 			--min_sra_file_size <Minimum file size cutoff in MB to check prefetched SRA file sizes to cath sralite files that might cause downstream errors> default cutoff is 1MB
 			--gff <Full path to GFF file if isoform removal needs to be performed>
 			--gff_config <Full path to GFF config file specifying the different GFF attributes - child_attribute, child_parent_linker, parent_attribute> default attributes are ID, Parent, ID respectively
@@ -104,6 +107,9 @@ def build_dashboard():
 	# --- per accession rows ---
 	for accession, stage in status.items():
 		color = {
+			"ena-ftp fetch": "cyan",
+			"ena-ftp not successful, falling back to prefetch": "red",
+			"ena-ftp failed": "red",
 			"prefetching": "cyan",
 			"prefetch failed": "red",
 			"fasterq-dump & pigz": "yellow",
@@ -1022,7 +1028,7 @@ def isoform_clean(gff3_input_file, cds_dict, no_trans_cds, child_attribute, chil
 	return repr_ids
 
 # function to perform kallisto quantification as soon as SRA file is fetched
-def fasterqdump_kallisto_worker(fasterqpigz_completed_accessions, kallisto_completed_accessions, index_file, sradir, readfile_status, logger, kallistodir, kallisto, cores,tmpdir, fasterq_dump, attempts, base_wait, failed_accessions_file,fasterqpigz_completed_accessions_file,kallisto_completed_accessions_file,subprocess_log):
+def fasterqdump_kallisto_worker(ena_ftp_fetched_accessions, fasterqpigz_completed_accessions, kallisto_completed_accessions, index_file, sradir, readfile_status, logger, kallistodir, kallisto, cores,tmpdir, fasterq_dump, attempts, base_wait, failed_accessions_file,fasterqpigz_completed_accessions_file,kallisto_completed_accessions_file,subprocess_log):
 	while True:
 		accession = kallisto_queue.get()
 		if accession is barrier:
@@ -1107,6 +1113,64 @@ def fasterqdump_kallisto_worker(fasterqpigz_completed_accessions, kallisto_compl
 			shutil.rmtree(acc_dir)
 		kallisto_queue.task_done()
 
+#function to provide option for direct download of the accession via ena-ftp with kingfisher-download
+def kingfisher_ena_fetch(fetch_fallback, prefetch_completed_accessions, fasterqpigz_completed_accessions,
+						  kingfisher, accession, threads, attempts, sradir, prefetch_command,
+						  minimum_sra_file_size_threshold, base_wait, failed_accessions_file,
+						  prefetch_completed_accessions_file, fasterqpigz_completed_accessions_file,
+						  logger, subprocess_log):
+	if accession in prefetch_completed_accessions:
+		return  # already resolved in a prior run
+
+	update_status(accession, "ena-ftp fetch")
+	acc_dir = os.path.join(sradir, accession)
+
+	for attempt in range(attempts):
+		try:
+			if os.path.exists(acc_dir):
+				shutil.rmtree(acc_dir)
+			os.makedirs(acc_dir, exist_ok=True)
+
+			cmd = f"{kingfisher} get -r {accession} -m ena-ftp --output-directory {acc_dir} -t {threads}"
+			result = subprocess.run(cmd, shell=True, stdout=subprocess_log, stderr=subprocess_log)
+			if result.returncode != 0:
+				raise RuntimeError(f"kingfisher ena-ftp fetch failed for {accession} with code {result.returncode}")
+
+			gz_files = glob.glob(os.path.join(acc_dir, "*.gz"))
+			if not (gz_files and all(os.path.getsize(f) > 0 for f in gz_files)):
+				raise RuntimeError(f"ena-ftp fetch for {accession} produced no valid fastq.gz files")
+
+			# success -> this accession is already past the fasterq-dump/pigz stage
+			fasterqpigz_completed_accessions.add(accession)
+			with open(prefetch_completed_accessions_file, 'a') as out:
+				out.write(f'{accession}\n'); out.flush(); os.fsync(out.fileno())
+			with open(fasterqpigz_completed_accessions_file, 'a') as out:
+				out.write(f'{accession}\n'); out.flush(); os.fsync(out.fileno())
+			kallisto_queue.put(accession)
+			return
+
+		except RuntimeError as e:
+			logger.warning(f"ena-ftp attempt {attempt + 1} failed for {accession}: {e}")
+			if os.path.exists(acc_dir):
+				shutil.rmtree(acc_dir)
+			if attempt < attempts - 1:
+				wait = base_wait * (2 ** attempt)
+				logger.info(f"Retrying ena-ftp for {accession} in {wait}s")
+				time.sleep(wait)
+	if fetch_fallback == 'yes':
+		update_status(accession, "ena-ftp not successful, falling back to prefetch")
+		logger.error(f"All ena-ftp attempts exhausted for {accession}; falling back to sratoolkit prefetch")
+		parallel_prefetch(prefetch_completed_accessions, accession, attempts, sradir, prefetch_command,
+						   minimum_sra_file_size_threshold, base_wait, failed_accessions_file,
+						   prefetch_completed_accessions_file, logger, subprocess_log)
+	elif fetch_fallback == 'no':
+		update_status(accession, "ena-ftp failed")
+		logger.error(f"All ena-ftp attempts exhausted for {accession}")
+		with open(failed_accessions_file, 'a') as out:
+			out.write(f'{accession}\n')
+			out.flush()
+			os.fsync(out.fileno())
+
 #function to control fetching of SRA files through parallelized prefetch
 def parallel_prefetch(prefetch_completed_accessions, accession, attempts,sradir, prefetch_command, minimum_sra_file_size_threshold, base_wait, failed_accessions_file, prefetch_completed_accessions_file, logger,subprocess_log):
 	if accession not in prefetch_completed_accessions:
@@ -1153,6 +1217,21 @@ def parallel_prefetch(prefetch_completed_accessions, accession, attempts,sradir,
 						os.fsync(out.fileno())
 
 def main(arguments):
+
+	if '--fetch' in arguments:#kingfisher or sratoolkit; default is sratoolkit
+		fetch = arguments[arguments.index('--fetch')+1]
+	else:
+		fetch = 'sratoolkit'
+
+	if '--kingfisher' in arguments:#full path to kingfisher
+		kingfisher = arguments[arguments.index('--kingfisher')+1]
+	else:
+		kingfisher = 'kingfisher'
+
+	if '--fetch_fallback' in arguments:#Option to fallback to sratoolkit in case kingfisher ena-ftp is chosen as the fetch method; no by default
+		fetch_fallback = arguments[arguments.index('--fetch_fallback')+1]
+	else:
+		fetch_fallback = 'no'
 	if '--sample_name' in arguments:
 		orgname = arguments[arguments.index('--sample_name')+1]
 	else:
@@ -1513,6 +1592,7 @@ def main(arguments):
 	#code block to record completed accessions to tackle internet and network disruption interruptions
 	completed_accessions = set()
 	prefetch_completed_accessions_file = os.path.join(tmpdir,'prefetch_completed_accession.txt')
+	ena_ftp_fetched_accessions_file = os.path.join(tmpdir,'ena_ftp_completed_accession.txt')
 	fasterqpigz_completed_accessions_file = os.path.join(tmpdir,'fasterq-dump_pigz_completed_accession.txt')
 	kallisto_completed_accessions_file = os.path.join(tmpdir, 'kallisto_quant_completed_accessions.txt')
 
@@ -1522,6 +1602,7 @@ def main(arguments):
 		os.makedirs(kallistodir)
 
 	prefetch_completed_accessions = set()
+	ena_ftp_fetched_accessions = set()
 	fasterqpigz_completed_accessions = set()
 	kallisto_completed_accessions = set()
 
@@ -1558,7 +1639,7 @@ def main(arguments):
 		command = nullcontext(None)
 
 	with command as live_display:
-		fk_thread = Thread(target=fasterqdump_kallisto_worker, args=(fasterqpigz_completed_accessions, kallisto_completed_accessions, index_file, sradir, readfile_status, logger, kallistodir, kallisto, cores,tmpdir, fasterq_dump, attempts, base_wait, failed_accessions_file,fasterqpigz_completed_accessions_file,kallisto_completed_accessions_file,subprocess_log))
+		fk_thread = Thread(target=fasterqdump_kallisto_worker, args=(ena_ftp_fetched_accessions, fasterqpigz_completed_accessions, kallisto_completed_accessions, index_file, sradir, readfile_status, logger, kallistodir, kallisto, cores,tmpdir, fasterq_dump, attempts, base_wait, failed_accessions_file,fasterqpigz_completed_accessions_file,kallisto_completed_accessions_file,subprocess_log))
 		fk_thread.start()
 
 		# keep active prefetch threads = batch dynamically
@@ -1588,7 +1669,10 @@ def main(arguments):
 			# clean up finished threads
 			active_prefetch_threads = [t for t in active_prefetch_threads if t.is_alive()]
 			# start new prefetch thread for this accession
-			t = Thread(target=parallel_prefetch, args=(prefetch_completed_accessions, accession, attempts,sradir, prefetch_command, minimum_sra_file_size_threshold, base_wait, failed_accessions_file, prefetch_completed_accessions_file, logger,subprocess_log))
+			if fetch == 'sratoolkit':
+				t = Thread(target=parallel_prefetch, args=(prefetch_completed_accessions, accession, attempts,sradir, prefetch_command, minimum_sra_file_size_threshold, base_wait, failed_accessions_file, prefetch_completed_accessions_file, logger,subprocess_log))
+			elif fetch == 'kingfisher':
+				t = Thread(target = kingfisher_ena_fetch, args=(fetch_fallback, prefetch_completed_accessions, fasterqpigz_completed_accessions, kingfisher, accession,cores,attempts, sradir, prefetch_command,minimum_sra_file_size_threshold, base_wait, failed_accessions_file, prefetch_completed_accessions_file, fasterqpigz_completed_accessions_file, logger, subprocess_log))
 			t.start()
 			active_prefetch_threads.append(t)
 			live_display.update(build_dashboard())  # refresh after starting new thread
