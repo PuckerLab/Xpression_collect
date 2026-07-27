@@ -342,7 +342,7 @@ def clean_headers_for_busco(gene_id):
 	return safe_gene_id
 
 #function to run BUSCO
-def run_busco(logger, orgname, fasta_file, busco_path, busco_dir, busco_dir_final, busco_threads_per_organism, org_type,host_cache_dir, busco_db_dir, buscolineage):
+def run_busco(ref, logger, orgname, fasta_file, busco_path, busco_dir, busco_dir_final, busco_threads_per_organism, org_type,host_cache_dir, busco_db_dir, buscolineage):
 	#code to create a temp CDS fasta file to clean headers and use this clean protein file for busco analysis - this temp file will be deleted after the busco run completes
 	tmp_fasta = os.path.join(busco_dir, f"{orgname}_temp.cds.fasta")
 	try:
@@ -356,23 +356,23 @@ def run_busco(logger, orgname, fasta_file, busco_path, busco_dir, busco_dir_fina
 					outfile.write(line)
 		if org_type == 'eukaryote':
 			if buscolineage=='auto':
-				cmd = busco_path + ' -i ' + tmp_fasta + ' -m proteins --auto-lineage-euk -q -o ' + orgname + ' -c ' + busco_threads_per_organism + ' --out_path ' + busco_dir + ' --download_path ' + busco_db_dir
+				cmd = busco_path + ' -i ' + tmp_fasta + ' -m proteins --auto-lineage-euk -q -o ' + ref + ' -c ' + busco_threads_per_organism + ' --out_path ' + busco_dir + ' --download_path ' + busco_db_dir
 			else:
 				lineage=buscolineage
-				cmd = busco_path + ' -i ' + tmp_fasta + ' -m proteins -l '+ lineage + ' -q -o ' + orgname + ' -c ' + busco_threads_per_organism + ' --out_path ' + busco_dir + ' --download_path ' + busco_db_dir
+				cmd = busco_path + ' -i ' + tmp_fasta + ' -m proteins -l '+ lineage + ' -q -o ' + ref + ' -c ' + busco_threads_per_organism + ' --out_path ' + busco_dir + ' --download_path ' + busco_db_dir
 		elif org_type == 'prokaryote':
 			if buscolineage=='auto':
-				cmd = busco_path + ' -i ' + tmp_fasta + ' -m proteins --auto-lineage-prok -q -o ' + orgname + ' -c ' + busco_threads_per_organism + ' --out_path ' + busco_dir + ' --download_path ' + busco_db_dir
+				cmd = busco_path + ' -i ' + tmp_fasta + ' -m proteins --auto-lineage-prok -q -o ' + ref + ' -c ' + busco_threads_per_organism + ' --out_path ' + busco_dir + ' --download_path ' + busco_db_dir
 			else:
 				lineage=buscolineage
-				cmd = busco_path + ' -i ' + tmp_fasta + ' -m proteins -l ' + lineage + ' -q -o ' + orgname + ' -c ' + busco_threads_per_organism + ' --out_path ' + busco_dir + ' --download_path ' + busco_db_dir
+				cmd = busco_path + ' -i ' + tmp_fasta + ' -m proteins -l ' + lineage + ' -q -o ' + ref + ' -c ' + busco_threads_per_organism + ' --out_path ' + busco_dir + ' --download_path ' + busco_db_dir
 		p = subprocess.Popen(args=cmd, shell=True)
 		p.communicate()
 	finally:
 		#remove the temporary pep fasta file
 		if os.path.exists(tmp_fasta):
 			os.remove(tmp_fasta)
-	species_dir = Path(busco_dir) / orgname
+	species_dir = Path(busco_dir) / ref
 	# Get all run_* folders (ignore auto_lineage and subdirs of auto_lineage)
 	run_dirs = [
 		p for p in species_dir.iterdir()
@@ -1100,7 +1100,7 @@ def fasterqdump_kallisto_worker(fasterqpigz_completed_accessions, kallisto_compl
 							out.flush()
 							os.fsync(out.fileno())
 
-		for folder in results_tmp_folder:
+		for folder in Path(results_tmp_folder).iterdir():
 			kallisto_completed_accessions_file = os.path.join(folder, 'kallisto_quant_completed_accessions.txt')
 			ref = folder.name
 			kallisto_completed_accessions = kallisto_completion_tracker[ref]
@@ -1180,57 +1180,46 @@ def main(arguments):
 		else:
 			print('File with SRA accessions list missing. Exiting...')
 			sys.exit(__usage__)
-	if '--gff' in arguments:
-		gff_file=arguments[arguments.index('--gff')+1]
-		if os.path.isfile(gff_file):
-			pass
-		else:
-			print('GFF file missing. Exiting...')
-			sys.exit(__usage__)
+
 	# gff file config params
+	gff_config_dic = {}
 	if '--gff_config' in arguments:
 		gff_config_file = arguments[arguments.index('--gff_config') + 1]
 		if os.path.isfile(gff_config_file):
-			pass
+			with open(gff_config_file, 'r') as f:
+				for line in f:
+					parts = line.strip().split()
+					gff_config_dic[parts[0]] = {'child_attribute': parts[1], 'child_parent_linker': parts[2],'parent_attribute': parts[3]}
 		else:
 			print('GFF config file missing. Exiting...')
 			sys.exit(__usage__)
-		with open(gff_config_file, 'r') as f:
-			for line in f:
-				parts = line.strip().split()
-				child_attribute = parts[0]
-				child_parent_linker = parts[1]
-				parent_attribute = parts[2]
+
 	else:
-		child_attribute = 'ID'
-		child_parent_linker = 'Parent'
-		parent_attribute = 'ID'
+		gff_config_dic['default'] = {'child_attribute': 'ID', 'child_parent_linker': 'Parent','parent_attribute': 'ID'}
+
 	if '--fastq_pattern' in arguments:
 		pattern_names = arguments[arguments.index('--fastq_pattern')+1]#specify fastq read file name pattern for the paired end files separated by commas without spaces like - _pass_1,_pass_2_
 		pattern_names_list = pattern_names.split(',')
 	else:
 		pattern_names_list = ["_pass_1", "_pass_2"]
 
-	if '--multiple_ref' in arguments:
-		multi_ref_dic = {}
-		multi_ref_config_file = arguments[arguments.index('--multiple_ref')]
-		with open (multi_ref_config_file,'r') as f:
-			for line in f:
-				parts = line.strip('\n').split()
-				if os.path.isfile(parts[1]):
-					multi_ref_dic[parts[0]] = parts[1]
+	multi_ref_dic = {}
+	multi_ref_gff_dic = {}
+	multi_ref_config_file = arguments[arguments.index('--input_config')+1]
+	with open (multi_ref_config_file,'r') as f:
+		for line in f:
+			parts = line.strip('\n').split()
+			if os.path.isfile(parts[1]):
+				multi_ref_dic[parts[0]] = parts[1]
+			else:
+				print(f'CDS file missing for {parts[0]}. Exiting...')
+				sys.exit(__usage__)
+			if len(parts)>2:
+				if os.path.isfile(parts[2]):
+					multi_ref_gff_dic[parts[0]] = parts[2]
 				else:
-					print(f'CDS file missing for {parts[0]}. Exiting...')
+					print(f'GFF file missing for {parts[0]}. Exiting...')
 					sys.exit(__usage__)
-
-	cds_file = arguments[arguments.index('--cds')+1]#full path to CDS file
-	if os.path.isfile(cds_file):
-		pass
-		multi_ref_dic = {}
-		multi_ref_dic[orgname] = cds_file
-	else:
-		print('CDS file missing. Exiting...')
-		sys.exit(__usage__)
 
 	if '--annotation_qc' in arguments:# yes or no for BUSCO-based QC of the PEP file
 		qc = arguments[arguments.index('--annotation_qc')+1]
@@ -1420,7 +1409,7 @@ def main(arguments):
 	results_out_folder = os.path.join(outdir, 'Results')
 	if not os.path.exists(results_out_folder):
 		os.mkdir(results_out_folder)
-	results_tmp_folder = os.path.join(outdir, 'Tmp_results')
+	results_tmp_folder = os.path.join(tmpdir, 'Tmp_results')
 	if not os.path.exists(results_tmp_folder):
 		os.mkdir(results_tmp_folder)
 
@@ -1550,9 +1539,9 @@ def main(arguments):
 					ploidy_results = []
 					busco_single_copy_lists = {}
 					if busco_path != 'busco_docker':
-						busco_result = run_busco(logger, orgname, str(pep_file), busco_path, busco_dir, busco_dir_final,str(cores), org_type, host_cache_dir,busco_db_dir, buscolineage)
+						busco_result = run_busco(ref, logger, orgname, str(pep_file), busco_path, busco_dir, busco_dir_final,str(cores), org_type, host_cache_dir,busco_db_dir, buscolineage)
 					elif busco_path == 'busco_docker':
-						busco_result = run_busco(logger, orgname, str(pep_file), busco_path_generated, busco_dir,busco_dir_final, str(cores), org_type,container_cache_dir, container_db_dir, buscolineage)
+						busco_result = run_busco(ref, logger, orgname, str(pep_file), busco_path_generated, busco_dir,busco_dir_final, str(cores), org_type,container_cache_dir, container_db_dir, buscolineage)
 					with open(busco_qc_result, 'w') as out:
 						out.write('Organism' + '\t' + 'Pseudo ploidy number' + '\t' + 'BUSCO Completeness (%)' + '\t' + 'BUSCO Duplication (%)' + '\n')
 						out.write(str(busco_result) + '\n')
@@ -1590,6 +1579,8 @@ def main(arguments):
 				with open (kallisto_completed_accessions_file, 'r') as f:
 					kallisto_completed_accessions = set(line.strip() for line in f)
 				kallisto_completion_tracker[ref] = kallisto_completed_accessions
+			else:
+				kallisto_completion_tracker[ref] = set()
 
 		# Clear failed accessions file at start of each run
 		with open(failed_accessions_file, 'w') as f:
@@ -1632,6 +1623,9 @@ def main(arguments):
 					else:
 						accessions_needing_prefetch.append(accession)
 				logger.info(f"Resume: re-queued {requeued_count} accessions directly to kallisto stage.")
+				if RICH_AVAILABLE:
+					sys.stdout.write(f"Resume: re-queued {requeued_count} accessions directly to kallisto stage.\n")
+					sys.stdout.flush()
 			else:
 				# fresh run - nothing to filter for resuming with fasterq-dump and kallisto
 				accessions_needing_prefetch = sra_accessions
@@ -1657,6 +1651,12 @@ def main(arguments):
 
 			# signal fasterq+kallisto consumer that no more accessions are coming
 			kallisto_queue.put(barrier)
+
+			# keep display alive while fk_thread processes requeued accessions
+			while fk_thread.is_alive():
+				live_display.update(build_dashboard())
+				time.sleep(5)
+
 			fk_thread.join()  # wait for last Kallisto to finish before merge step
 			live_display.update(build_dashboard())  # final refresh
 
@@ -1685,9 +1685,9 @@ def main(arguments):
 			os.mkdir(temp_counts_folder)
 
 		if not (os.path.exists(tpmfile) and os.path.exists(countsfile)):
-			logger.info(f'Merging TPM files and count files of all the samples')
+			logger.info(f'Merging TPM files and count files of all the samples of {ref}')
 			if RICH_AVAILABLE:
-				sys.stdout.write(f'Merging TPM files and count files of all the samples\n')
+				sys.stdout.write(f'Merging TPM files and count files of all the samples of {ref}\n')
 				sys.stdout.flush()
 			counttables = glob.glob(os.path.join(kallistodir, "*.tsv"))
 			count_data = {}
@@ -1720,9 +1720,9 @@ def main(arguments):
 		#code block to filter RNA-seq samples
 		filtered_tpm_file = os.path.join(folder, f"{orgname}.tpms.tsv")
 		if not os.path.exists(filtered_tpm_file):
-			logger.info("Filtering the TPM expression file")
+			logger.info(f"Filtering the TPM expression file of {ref}")
 			if RICH_AVAILABLE:
-				sys.stdout.write(f'Filtering the TPM expression file\n')
+				sys.stdout.write(f'Filtering the TPM expression file of {ref}\n')
 				sys.stdout.flush()
 			# --- run analysis of all data in folder/file --- #
 			doc_file = os.path.join(folder_tmp,f'{orgname}_qc.doc')
@@ -1761,12 +1761,12 @@ def main(arguments):
 						new_line.append("insufficient counts: " + str(counts))
 						out.write("\t".join(list(map(str, new_line))) + "\n")
 
-			logger.info("number of valid sample: " + str(len(valid_samples)))
-			logger.info("number of invalid sample: " + str(len(TPM_data.keys()) - len(valid_samples)))
+			logger.info("number of valid sample of " + ref + " : " + str(len(valid_samples)))
+			logger.info("number of invalid sample of " + ref + " : " + str(len(TPM_data.keys()) - len(valid_samples)))
 			if RICH_AVAILABLE:
-				sys.stdout.write(f"number of valid sample: {str(len(valid_samples))}\n")
+				sys.stdout.write(f"number of valid sample of {ref}: {str(len(valid_samples))}\n")
 				sys.stdout.flush()
-				sys.stdout.write(f"number of invalid sample: {str(len(TPM_data.keys()) - len(valid_samples))}\n")
+				sys.stdout.write(f"number of invalid sample of {ref}: {str(len(TPM_data.keys()) - len(valid_samples))}\n")
 				sys.stdout.flush()
 
 			# --- generate output file --- #
@@ -1779,9 +1779,9 @@ def main(arguments):
 							new_line.append(TPM_data[sample][idx])
 						out.write("\t".join(list(map(str, new_line))) + "\n")
 			else:
-				logger.error("WARNING: no valid samples in data set!")
+				logger.error(f"WARNING: no valid samples in data set of {ref}!")
 				if RICH_AVAILABLE:
-					sys.stdout.write(f'WARNING: no valid samples in data set!\n')
+					sys.stdout.write(f'WARNING: no valid samples in data set of {ref}!\n')
 					sys.stdout.flush()
 			# --- generate figure --- #
 			fig_file = os.path.join(folder_tmp, f'{orgname}_qc.pdf')
@@ -1807,13 +1807,13 @@ def main(arguments):
 
 			fig.savefig(fig_file)
 			if remove_isoforms == 'no':
-				logger.info(f'Xpression_collector pipeline completed successfully!!!')
+				logger.info(f'Xpression_collector pipeline completed successfully for {ref}!!!')
 				if RICH_AVAILABLE:
-					sys.stdout.write(f'Xpression_collector pipeline completed successfully!!!\n')
+					sys.stdout.write(f'Xpression_collector pipeline completed successfully for {ref}!!!\n')
 					sys.stdout.flush()
 
 		#optional removal of isoforms
-		isoform_reduced_cds_file = folder + f"{orgname}.repr.cds.fasta"
+		isoform_reduced_cds_file = os.path.join(folder, f"{orgname}.repr.cds.fasta")
 		repr_output_spec = os.path.join(folder, f'{orgname}.repr.pep.fasta')
 		repr_tpm_file = os.path.join(folder, f'{orgname}.repr.tpms.tsv')
 		if remove_isoforms == 'yes':
@@ -1825,6 +1825,13 @@ def main(arguments):
 					sys.stdout.write(f"Removing alternative isoforms\n")
 					sys.stdout.flush()
 				cds_dict = load_multiple_fasta_file(multi_ref_dic[ref])
+				gff_file = multi_ref_gff_dic[ref]
+				if ref in gff_config_dic.keys():
+					child_attribute = gff_config_dic[ref]['child_attribute']
+					child_parent_linker = gff_config_dic[ref]['child_parent_linker']
+				else:
+					child_attribute = gff_config_dic['default']['child_attribute']
+					child_parent_linker = gff_config_dic['default']['child_parent_linker']
 				repr_ids = isoform_clean(gff_file, cds_dict, isoform_reduced_cds_file, child_attribute, child_parent_linker)
 
 				#code block to produce PEP file without isoforms
@@ -1858,9 +1865,9 @@ def main(arguments):
 
 				#code block to produce TPM file without alternative isoforms
 				repr_tpm_filtered = keep_primary_transcript_exp(repr_ids, repr_tpm_file, isoform_reduced_cds_file, filtered_tpm_file)
-				logger.info(f'Xpression_collector pipeline completed successfully!!!')
+				logger.info(f'Xpression_collector pipeline completed successfully for {ref}!!!')
 				if RICH_AVAILABLE:
-					sys.stdout.write(f"Xpression_collector pipeline completed successfully!!!\n")
+					sys.stdout.write(f"Xpression_collector pipeline completed successfully for {ref}!!!\n")
 					sys.stdout.flush()
 
 		# code block to merge filtered TPM file produced in this run with already existing filtered TPM files
@@ -1885,70 +1892,70 @@ def main(arguments):
 					if len(merge_filtered_tpm) > 1:
 						merged_df = merge_expression_tsvs(merge_filtered_tpm[0],merge_filtered_tpm[1:])
 						merged_df.to_csv(merged_filtered_tpm_file, sep='\t', index=False)
-						logger.warning(f"No valid expression file produced in this run for merge. Merged the other expression files input for merge.")
+						logger.warning(f"{ref}: No valid expression file produced in this run for merge. Merged the other expression files input for merge.")
 						if RICH_AVAILABLE:
-							sys.stdout.write(f"No valid expression file produced in this run for merge. Merged the other expression files input for merge.\n")
+							sys.stdout.write(f"{ref}: No valid expression file produced in this run for merge. Merged the other expression files input for merge.\n")
 							sys.stdout.flush()
-						logger.info(f"Merge of user supplied TPM file(s) successful: {merged_df.shape[0]} genes x {merged_df.shape[1]} samples")
+						logger.info(f"{ref}: Merge of user supplied TPM file(s) successful: {merged_df.shape[0]} genes x {merged_df.shape[1]} samples")
 						if RICH_AVAILABLE:
-							sys.stdout.write(f"Merge of user supplied TPM file(s) successful: {merged_df.shape[0]} genes x {merged_df.shape[1]} samples\n")
+							sys.stdout.write(f"{ref}: Merge of user supplied TPM file(s) successful: {merged_df.shape[0]} genes x {merged_df.shape[1]} samples\n")
 							sys.stdout.flush()
 					else:
-						logger.error(f"No valid expression file produced in this run for merge.")
+						logger.error(f"{ref}: No valid expression file produced in this run for merge.")
 						if RICH_AVAILABLE:
-							sys.stdout.write(f"No valid expression file produced in this run for merge.\n")
+							sys.stdout.write(f"{ref}: No valid expression file produced in this run for merge.\n")
 							sys.stdout.flush()
 				if merge_filtered_repr_tpm:
 					pass
 				else:
-					logger.info(f'Xpression_collector pipeline completed successfully!!!')
+					logger.info(f'Xpression_collector pipeline completed successfully for {ref}!!!')
 					if RICH_AVAILABLE:
-						sys.stdout.write(f"Xpression_collector pipeline completed successfully!!!\n")
+						sys.stdout.write(f"Xpression_collector pipeline completed successfully for {ref}!!!\n")
 						sys.stdout.flush()
 			except ValueError as e:
-				logger.error(f"Aborting merge:\n{e}")
+				logger.error(f"Aborting merge for {ref}:\n{e}")
 				if RICH_AVAILABLE:
-					sys.stdout.write(f"Aborting merge:\n{e}")
+					sys.stdout.write(f"Aborting merge for {ref}:\n{e}")
 					sys.stdout.flush()
 		if merge_filtered_repr_tpm and remove_isoforms == 'yes':
 			try:
 				if os.path.exists(repr_tpm_file):#repr_tpm_file and repr_tpm_filtered refer to the same isoform removed TPM file
 					merged_df = merge_expression_tsvs(repr_tpm_file, merge_filtered_repr_tpm)
 					merged_df.to_csv(merged_filtered_repr_tpm_file, sep='\t', index=False)
-					logger.info(f"Merge of currently produced representative (alternative transcripts-free) TPM file and user supplied repr TPM file(s) successful: {merged_df.shape[0]} genes x {merged_df.shape[1]} samples")
+					logger.info(f"Merge of currently produced representative (alternative transcripts-free) TPM file and user supplied repr TPM file(s) successful for {ref}: {merged_df.shape[0]} genes x {merged_df.shape[1]} samples")
 					if RICH_AVAILABLE:
-						sys.stdout.write(f"Merge of currently produced representative (alternative transcripts-free) TPM file and user supplied repr TPM file(s) successful: {merged_df.shape[0]} genes x {merged_df.shape[1]} samples\n")
+						sys.stdout.write(f"Merge of currently produced representative (alternative transcripts-free) TPM file and user supplied repr TPM file(s) successful for {ref}: {merged_df.shape[0]} genes x {merged_df.shape[1]} samples\n")
 						sys.stdout.flush()
 				else:
 					if len(merge_filtered_repr_tpm) > 1:
 						merged_df = merge_expression_tsvs(merge_filtered_repr_tpm[0],merge_filtered_repr_tpm[1:])
 						merged_df.to_csv(merged_filtered_repr_tpm_file, sep='\t', index=False)
-						logger.warning(f"No valid representative (alternative transcripts-free) expression file produced in this run for merge. Merged the other repr expression files input for merge.")
+						logger.warning(f"{ref}: No valid representative (alternative transcripts-free) expression file produced in this run for merge. Merged the other repr expression files input for merge.")
 						if RICH_AVAILABLE:
-							sys.stdout.write(f"No valid representative (alternative transcripts-free) expression file produced in this run for merge. Merged the other repr expression files input for merge.\n")
+							sys.stdout.write(f"{ref}: No valid representative (alternative transcripts-free) expression file produced in this run for merge. Merged the other repr expression files input for merge.\n")
 							sys.stdout.flush()
-						logger.info(f"Merge of user supplied repr TPM file(s) successful: {merged_df.shape[0]} genes x {merged_df.shape[1]} samples")
+						logger.info(f"{ref}: Merge of user supplied repr TPM file(s) successful: {merged_df.shape[0]} genes x {merged_df.shape[1]} samples")
 						if RICH_AVAILABLE:
-							sys.stdout.write(f"Merge of user supplied repr TPM file successful: {merged_df.shape[0]} genes x {merged_df.shape[1]} samples\n")
+							sys.stdout.write(f"{ref}: Merge of user supplied repr TPM file successful: {merged_df.shape[0]} genes x {merged_df.shape[1]} samples\n")
 							sys.stdout.flush()
 					else:
-						logger.error(f"No valid representative (alternative transcripts free) expression file produced in this run for merge.")
+						logger.error(f"{ref}: No valid representative (alternative transcripts free) expression file produced in this run for merge.")
 						if RICH_AVAILABLE:
-							sys.stdout.write(f"No valid representative (alternative transcripts free) expression file produced in this run for merge.\n")
+							sys.stdout.write(f"{ref}: No valid representative (alternative transcripts free) expression file produced in this run for merge.\n")
 							sys.stdout.flush()
-				logger.info(f'Xpression_collector pipeline completed successfully!!!')
+				logger.info(f'Xpression_collector pipeline completed successfully for {ref}!!!')
 				if RICH_AVAILABLE:
-					sys.stdout.write(f"Xpression_collector pipeline completed successfully!!!\n")
+					sys.stdout.write(f"Xpression_collector pipeline completed successfully for {ref}!!!\n")
 					sys.stdout.flush()
 			except ValueError as e:
-				logger.error(f"Aborting merge:\n{e}")
+				logger.error(f"Aborting merge for {ref}:\n{e}")
 				if RICH_AVAILABLE:
-					sys.stdout.write(f"Aborting merge:\n{e}\n")
+					sys.stdout.write(f"Aborting merge for {ref}:\n{e}\n")
 					sys.stdout.flush()
 	if clean_up=='yes':
 		shutil.rmtree(tmpdir)
 
-if '--sra' in sys.argv and '--cds' in sys.argv and '--out' in sys.argv:
+if '--sra' in sys.argv and '--input_config' in sys.argv and '--out' in sys.argv:
 	main(sys.argv)
 else:
 	sys.exit(__usage__)
