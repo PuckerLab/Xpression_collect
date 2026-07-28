@@ -17,4 +17,5 @@ dependencies:
   - kallisto
   - busco
   - sra-tools
+  - kingfisher
 
