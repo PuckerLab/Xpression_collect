@@ -177,7 +177,7 @@ OPTIONAL:
 
 --fetch				   STR	   Method of fetching the accessions; sratoolkit | kingfisher; default is sratoolkit
 
---fetch_fallback	   STR	   Option to fallback to sratoolkit in case kingfisher is chosen as the fetch method; default is no
+--fetch_fallback	   STR	   Option to fallback to sratoolkit in case kingfisher is chosen as the fetch method; yes | no default is no
 
 --kingfisher		   STR	   Full path to kingfisher executable
 
@@ -266,25 +266,41 @@ OPTIONAL:
   and excellent network bandwidth
 
 -> Alternative isoforms removal needs the GFF file to be given along with the CDS file and it is important for the CDS FASTA headers and the transcript identifiers in the GFF file to match to process without errors
-  
+
+-> Detailed guidelines on preparing the config file for --input_config flag are:
+
+   The input config file is a simple tab-separated TXT file that has 3 columns in the order:
+
+                    (i)   Reference name
+
+					(ii)  Full path to CDS file
+
+					(iii) Full path to GFF file (optional)
+
 -> Detailed guidelines on preparing the config file for --gff_config flag are:
 
     The GFF config TXT file is a simple tab separated TXT file that:
 					
-          Needs 3 columns in the order
+          Needs 4 columns in the order
 
-					(i) child_attribute: attribute field of the mRNA or transcript feature in the file like ID
+		  			(i) Reference name - this needs to be the same as the reference name in the first column of the input config file
 
-					(ii) child_parent_linker: attribute field of the mRNA or transcript, CDS, exon features that link them with their 
+					(ii) child_attribute: attribute field of the mRNA or transcript feature in the file like ID
+
+					(iii) child_parent_linker: attribute field of the mRNA or transcript, CDS, exon features that link them with their 
 					respective parent feature like Parent - Note: base assumption by the tool is that all child levels
 					have the same child-parent linker attribute fields. 
           
                     For eg., if Parent is the child-parent linker in the mRNA feature line,
                     then Parent will be the child-parent linker for all other child-level feature lines in the GFF
 
-					(iii) parent_attribute: attribute field of the gene feature like ID
+					(iv) parent_attribute: attribute field of the gene feature like ID
 
 -> In case the headers in your CDS file are formatted differently when compared to the transcript identifiers in the GFF file supplied, you can use a helper called Fasta_fix.py to tackle this issue. The helper script and its detailed usage can be found in https://github.com/ShakNat/DupyliCate
+
+-> --fetch allows you to choose the repository for fetching the accessions - ENA-FTP fetch via kingfisher or fetching from SRA via sratoolkit; While choosing the kingfisher fetch method, there is an option to activate fall-back to sratoolkit fetching in case the accession is not found in ENA with --fetch_fallback. In such cases, the run time can increase since the first trial is done with ENA-FTP and in case of a failure, sratoolkit is attempted as fallback. Hence it is first recommended to ensure presence of all accessions in your list in one of these databases and choose the fetch method accordingly.
+
+-> To allow for easy merge and future updates to existing expression files, the --merge_tpms and --only_merge flags are provided. The difference between --merge_tpms and --only_merge is that the former can carry out accession fetching and expression analysis run and do the merging of the config specified files with the results produced in that run. Whereas with --only_merge, the fetching of accessions and expression analysis steps are skipped, the script checks if the output files sample_unfiltered.tpms.tsv, sample_unfiltered.repr.tpms.tsv, sample.tpms.tsv, sample.repr.tpms.tsv, sample.pep.fasta, sample.repr.pep.fasta, sample.repr.cds.fasta are already present in the putput folder specified and if so, activates the merge of the tpm files. Hnece it is important to note that the standalone merge can work out only if the output folder specified already has a set of output files from a previous Xpression_collector run.
 
 ## Third party tool references
 
@@ -295,6 +311,8 @@ OPTIONAL:
 -> Delaney K. Sullivan, Kyung Hoi (Joseph) Min, Kristján Eldjárn Hjörleifsson, Laura Luebbert, Guillaume Holley, Lambda Moses, Johan Gustafsson, Nicolas L. Bray, Harold Pimentel, A. Sina Booeshaghi, Páll Melsted, Lior Pachter. kallisto, bustools and kb-python for quantifying bulk, single-cell and single-nucleus RNA-seq. Nature Protocols 20, 587-607 (2025). https://doi.org/10.1038/s41596-024-01057-0
 
 -> Fredrik Tegenfeldt, Dmitry Kuznetsov, Mosè Manni, Matthew Berkeley, Evgeny M Zdobnov, Evgenia V Kriventseva, OrthoDB and BUSCO update: annotation of orthologs with wider sampling of genomes, Nucleic Acids Research, Volume 53, Issue D1, 6 January 2025, Pages D516–D522, https://doi.org/10.1093/nar/gkae987
+
+-> Woodcroft, B. J., Cunningham, M., Gans, J. D., Bolduc, B. B., & Hodgkins, S. B. (2023). Kingfisher: A utility for procurement of public sequencing data. [Computer software]. DOI: 10.5281/zenodo.10525085.
 
 
 ## Citation:
