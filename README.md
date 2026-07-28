@@ -19,6 +19,17 @@ Xpression_collector is a simple Python-based pipeline for fetching RNA-seq reads
 
 <h2>📢 News & Updates</h2>
 
+-> **v0.4.0 is out and is the latest stable release!**
+
+-> **v0.4.0 major changes include**:
+
+  -> Xpression_collect now provides support for processing multiple references at once
+
+  -> Options provided to choose ENA-FTP based fetch of accessions by integrating kingfisher-download
+
+  -> Improved pandas-based merge provisions for easy updates of the expression files from multiple runs
+
+
 -> **v0.3.0 is out and is the latest stable release!**
 
 -> **v0.3.0 major changes include**:
@@ -68,7 +79,7 @@ git clone https://github.com/PuckerLab/Xpression_collect
 - **Python libraries** - pandas (v2.3.1 or greater), matplotlib (v3.10.5 or greater)
 
 **Optional dependencies**
-- **Tools** - BUSCO 
+- **Tools** - BUSCO, kingfisher-download 
 - **Python libraries** - pyfiglet (v1.0.2 or greater), rich (v15.0.0 or greater)
 
 ### (2) Docker installation
@@ -145,14 +156,14 @@ conda activate xpression_collector
 ```
 Usage:
 
-python3 Xpression_collector.py --cds <CDS_FILE>
+python3 Xpression_collector.py --input_config <CONFIG_FILE>
                                --sra <TXT_FILE_WITH_SRA_ACCESSIONS_LIST>
                                --out <OUTPUT_DIR>
 MANDATORY:
 
---cds                  STR     Full path to CDS file
+--input_config         STR     Full path to tab separated config file specifying the reference name,
+                               full path to CDS file, and full path to GFF file
 
-Either provide a list of SRA accessions to fetch or path to already available main folder with subfolders named according to the samples/ accessions
 
 --sra                  STR     Full path to TXT file with one SRA accession per line
 
@@ -164,12 +175,20 @@ OPTIONAL:
 
 --sample_name          STR     Name of the species; default is sample
 
+--fetch				   STR	   Method of fetching the accessions; sratoolkit | kingfisher; default is sratoolkit
+
+--fetch_fallback	   STR	   Option to fallback to sratoolkit in case kingfisher is chosen as the fetch method; default is no
+
+--kingfisher		   STR	   Full path to kingfisher executable
+
 --gff                  STR     Full path to GFF file if isoform removal needs to be performed
 
---gff_config           STR      Full path to GFF config file specifying the different GFF attributes - child_attribute, child_parent_linker, parent_attribute;
-                                default attributes are ID, Parent, ID respectively
+--gff_config           STR     Full path to GFF config file specifying the reference name in the first column followed by the
+                               different GFF attributes - child_attribute, child_parent_linker, parent_attribute;
+                               default values in the config file are:
+                               default	ID	Parent	ID
 
---min_sra_file_size    INT    Minimum file size cutoff in MB to check prefetched SRA file sizes to cath sralite files; default cutoff is 1MB
+--min_sra_file_size    INT     Minimum file size cutoff in MB to check prefetched SRA file sizes to cath sralite files; default cutoff is 1MB
 
 --annotation_qc        STR     yes or no for BUSCO-based QC of the PEP file; default is yes
 
@@ -184,42 +203,44 @@ OPTIONAL:
 --wait                 STR     Base wait time for sleep in case of network delays for prefetch; Increases exponentially
                                with a base of 2 for each reattempt; default is 20 seconds
 
---remove_isoforms      STR   Optional step to remove isoforms; yes or no; default is yes
+--remove_isoforms      STR     Optional step to remove isoforms; yes or no; default is yes
 
---merge_tpms           STR   Full path to config file containing the full paths to the filtered_tpm, and/or repr_filtered_tpms to be merged
+--merge_tpms           STR     Full path to config file containing the full paths to the filtered_tpm, and/or repr_filtered_tpms to be merged
 
-                             First column will have paths to filtered_tpm files one per line; Second column will have paths to filtered_repr_tpm
-                             files, one per line
+                               First column will have paths to filtered_tpm files one per line; Second column will have paths to filtered_repr_tpm
+                               files, one per line
 
---min                  INT   Minimum percentage expression of top 100 genes
+--only_merge'		   STR	   Inserting this flag triggers only tpm and repr tpm file merging and not the entire expression analysis run
 
---max                  INT   Maximum percentage expression of top 100 genes
+--min                  INT     Minimum percentage expression of top 100 genes
 
---black                STR   SRA IDs to be removed or blacklisted in a TXT file with one SRA accession ID per line
+--max                  INT     Maximum percentage expression of top 100 genes
 
---busco                STR    Full path to BUSCO; Specify busco_docker if BUSCO is installed via docker
+--black                STR     SRA IDs to be removed or blacklisted in a TXT file with one SRA accession ID per line
 
---busco_lineage        STR    BUSCO lineage of the specific organism
+--busco                STR     Full path to BUSCO; Specify busco_docker if BUSCO is installed via docker
 
---busco_version        STR    Version of BUSCO> default is v6.0.0
+--busco_lineage        STR     BUSCO lineage of the specific organism
 
---container_version    STR    Container version of the BUSCO docker image
+--busco_version        STR     Version of BUSCO> default is v6.0.0
 
---docker_host_path     STR    Host path to be mounted on for running the docker image
+--container_version    STR     Container version of the BUSCO docker image
 
--docker_container_path STR    Container path of the docker image
+--docker_host_path     STR     Host path to be mounted on for running the docker image
+ 
+-docker_container_path STR     Container path of the docker image
 
---organism_type        STR    eukaryote or prokaryote for BUSCO analysis; default is eukaryote
+--organism_type        STR     eukaryote or prokaryote for BUSCO analysis; default is eukaryote
 
---kallisto             STR    Full path to the kallisto executable
+--kallisto             STR     Full path to the kallisto executable
 
---prefetch             STR    Full path to the prefetch executable
+--prefetch             STR     Full path to the prefetch executable
 
---fasterq-dump         STR    Full path to the fasterq-dump executable
+--fasterq-dump         STR     Full path to the fasterq-dump executable
 
 --uncompressed         STR     Provide this flag if your read files are uncompressed
 
---clean_up             STR    Clean up the TMP folder after a successful run; default is yes
+--clean_up             STR     Clean up the TMP folder after a successful run; default is yes
 
 ```
 ## More details
