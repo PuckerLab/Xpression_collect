@@ -1113,6 +1113,34 @@ def fasterqdump_kallisto_worker(ena_ftp_fetched_accessions, fasterqpigz_complete
 			shutil.rmtree(acc_dir)
 		kallisto_queue.task_done()
 
+#function to distribute threads among parallel processes so as to not waste them
+def distribute_threads(threads, parallel_processes):
+	if threads < parallel_processes:
+		print(f"Warning: only {threads} threads for {parallel_processes} processes — "
+			  f"{parallel_processes - threads} processes will get 0 threads and can't run yet.")
+	base = threads // parallel_processes
+	extra = threads % parallel_processes
+	result = []
+	for i in range(parallel_processes):
+		if i < extra:
+			result.append(base + 1)
+		else:
+			result.append(base)
+	return result
+
+#function to allocate threads to parallel processes
+def allocate_threads(batch_size, core_list):
+	if not hasattr(allocate_threads, "counter"):#dynamic attribution
+		allocate_threads.counter = 0
+	if allocate_threads.counter < batch_size:
+		threads = [core_list[allocate_threads.counter]]
+		allocate_threads.counter+=1
+		return threads
+	elif allocate_threads.counter == batch_size:
+		allocate_threads.counter = 0
+		threads = [core_list[allocate_threads.counter]]
+		allocate_threads.counter += 1
+		return threads
 #function to provide option for direct download of the accession via ena-ftp with kingfisher-download
 def kingfisher_ena_fetch(fetch_fallback, prefetch_completed_accessions, fasterqpigz_completed_accessions,
 						  kingfisher, accession, threads, attempts, sradir, prefetch_command,
@@ -1672,7 +1700,8 @@ def main(arguments):
 			if fetch == 'sratoolkit':
 				t = Thread(target=parallel_prefetch, args=(prefetch_completed_accessions, accession, attempts,sradir, prefetch_command, minimum_sra_file_size_threshold, base_wait, failed_accessions_file, prefetch_completed_accessions_file, logger,subprocess_log))
 			elif fetch == 'kingfisher':
-				t = Thread(target = kingfisher_ena_fetch, args=(fetch_fallback, prefetch_completed_accessions, fasterqpigz_completed_accessions, kingfisher, accession,cores,attempts, sradir, prefetch_command,minimum_sra_file_size_threshold, base_wait, failed_accessions_file, prefetch_completed_accessions_file, fasterqpigz_completed_accessions_file, logger, subprocess_log))
+				cpus = cores//batch_size #floor division to avoid float
+				t = Thread(target = kingfisher_ena_fetch, args=(fetch_fallback, prefetch_completed_accessions, fasterqpigz_completed_accessions, kingfisher, accession, cpus, attempts, sradir, prefetch_command,minimum_sra_file_size_threshold, base_wait, failed_accessions_file, prefetch_completed_accessions_file, fasterqpigz_completed_accessions_file, logger, subprocess_log))
 			t.start()
 			active_prefetch_threads.append(t)
 			live_display.update(build_dashboard())  # refresh after starting new thread
