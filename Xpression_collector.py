@@ -1905,13 +1905,17 @@ def main(arguments):
 		merged_filtered_repr_tpm_file = os.path.join(outdir, f'{orgname}_merged.repr.tpms.tsv')
 
 	if merge_filtered_tpm:
+		logger.info(f"Starting to merge TPM file(s)")
+		if RICH_AVAILABLE:
+			sys.stdout.write(f"Starting to merge TPM file(s)\n")
+			sys.stdout.flush()
 		try:
 			if os.path.exists(filtered_tpm_file):
 				merged_df = merge_expression_tsvs(filtered_tpm_file, merge_filtered_tpm)
 				merged_df.to_csv(merged_filtered_tpm_file, sep='\t', index=False)
-				logger.info(f"Merge of currently produced TPM file and user supplied TPM file(s) successful: {merged_df.shape[0]} genes x {merged_df.shape[1]} samples")
+				logger.info(f"Merge of currently produced TPM file and user supplied TPM file(s) successful: {merged_df.shape[0]} genes x {(merged_df.shape[1])-1} samples")
 				if RICH_AVAILABLE:
-					sys.stdout.write(f"Merge of currently produced TPM file and user supplied TPM file successful: {merged_df.shape[0]} genes x {merged_df.shape[1]} samples\n")
+					sys.stdout.write(f"Merge of currently produced TPM file and user supplied TPM file successful: {merged_df.shape[0]} genes x {(merged_df.shape[1])-1} samples\n")
 					sys.stdout.flush()
 			else:
 				if len(merge_filtered_tpm) > 1:
@@ -1921,9 +1925,9 @@ def main(arguments):
 					if RICH_AVAILABLE:
 						sys.stdout.write(f"No valid expression file produced in this run for merge. Merged the other expression files input for merge.\n")
 						sys.stdout.flush()
-					logger.info(f"Merge of user supplied TPM file(s) successful: {merged_df.shape[0]} genes x {merged_df.shape[1]} samples")
+					logger.info(f"Merge of user supplied TPM file(s) successful: {merged_df.shape[0]} genes x {(merged_df.shape[1])-1} samples")
 					if RICH_AVAILABLE:
-						sys.stdout.write(f"Merge of user supplied TPM file(s) successful: {merged_df.shape[0]} genes x {merged_df.shape[1]} samples\n")
+						sys.stdout.write(f"Merge of user supplied TPM file(s) successful: {merged_df.shape[0]} genes x {(merged_df.shape[1])-1} samples\n")
 						sys.stdout.flush()
 				else:
 					logger.error(f"No valid expression file produced in this run for merge.")
@@ -1943,13 +1947,17 @@ def main(arguments):
 				sys.stdout.write(f"Aborting merge:\n{e}")
 				sys.stdout.flush()
 	if merge_filtered_repr_tpm and remove_isoforms == 'yes':
+		logger.info(f"Starting to merge representative TPM file(s)")
+		if RICH_AVAILABLE:
+			sys.stdout.write(f"Starting to merge representative TPM file(s)\n")
+			sys.stdout.flush()
 		try:
 			if os.path.exists(repr_tpm_file):#repr_tpm_file and repr_tpm_filtered refer to the same isoform removed TPM file
 				merged_df = merge_expression_tsvs(repr_tpm_file, merge_filtered_repr_tpm)
 				merged_df.to_csv(merged_filtered_repr_tpm_file, sep='\t', index=False)
-				logger.info(f"Merge of currently produced representative (alternative transcripts-free) TPM file and user supplied repr TPM file(s) successful: {merged_df.shape[0]} genes x {merged_df.shape[1]} samples")
+				logger.info(f"Merge of currently produced representative (alternative transcripts-free) TPM file and user supplied repr TPM file(s) successful: {merged_df.shape[0]} genes x {(merged_df.shape[1])-1} samples")
 				if RICH_AVAILABLE:
-					sys.stdout.write(f"Merge of currently produced representative (alternative transcripts-free) TPM file and user supplied repr TPM file(s) successful: {merged_df.shape[0]} genes x {merged_df.shape[1]} samples\n")
+					sys.stdout.write(f"Merge of currently produced representative (alternative transcripts-free) TPM file and user supplied repr TPM file(s) successful: {merged_df.shape[0]} genes x {(merged_df.shape[1])-1} samples\n")
 					sys.stdout.flush()
 			else:
 				if len(merge_filtered_repr_tpm) > 1:
@@ -1959,9 +1967,9 @@ def main(arguments):
 					if RICH_AVAILABLE:
 						sys.stdout.write(f"No valid representative (alternative transcripts-free) expression file produced in this run for merge. Merged the other repr expression files input for merge.\n")
 						sys.stdout.flush()
-					logger.info(f"Merge of user supplied repr TPM file(s) successful: {merged_df.shape[0]} genes x {merged_df.shape[1]} samples")
+					logger.info(f"Merge of user supplied repr TPM file(s) successful: {merged_df.shape[0]} genes x {(merged_df.shape[1])-1} samples")
 					if RICH_AVAILABLE:
-						sys.stdout.write(f"Merge of user supplied repr TPM file successful: {merged_df.shape[0]} genes x {merged_df.shape[1]} samples\n")
+						sys.stdout.write(f"Merge of user supplied repr TPM file successful: {merged_df.shape[0]} genes x {(merged_df.shape[1])-1} samples\n")
 						sys.stdout.flush()
 				else:
 					logger.error(f"No valid representative (alternative transcripts free) expression file produced in this run for merge.")
