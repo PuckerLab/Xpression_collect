@@ -105,6 +105,7 @@ def build_dashboard():
 	# --- per accession rows ---
 	for accession, stage in status.items():
 		color = {
+			"prefetch done; queued for next steps.": "cyan",
 			"prefetching": "cyan",
 			"prefetch failed": "red",
 			"fasterq-dump & pigz": "yellow",
@@ -1042,6 +1043,7 @@ def fasterqdump_kallisto_worker(fasterqpigz_completed_accessions, kallisto_compl
 		# Run fasterq-dump and Kallisto
 		if accession not in fasterqpigz_completed_accessions:
 			update_status(accession, "fasterq-dump & pigz")
+			fasterq_failed = False
 			for attempt in range(attempts):
 				try:
 					# fasterq-dump
@@ -1085,9 +1087,9 @@ def fasterqdump_kallisto_worker(fasterqpigz_completed_accessions, kallisto_compl
 				except RuntimeError as e:
 					logger.warning(f"Attempt {attempt + 1} failed for {accession}: {e}")
 					# clean up partial files before retrying
-					if os.path.exists(acc_dir):
-						shutil.rmtree(acc_dir)
-						os.makedirs(acc_dir, exist_ok=True)
+					for f in os.listdir(acc_dir):
+						if not f.endswith('.sra'):
+							os.remove(os.path.join(acc_dir, f))
 					if attempt < attempts - 1:
 						wait = base_wait * (2 ** attempt)
 						logger.info(f"Retrying {accession} in {wait}s")
@@ -1095,10 +1097,15 @@ def fasterqdump_kallisto_worker(fasterqpigz_completed_accessions, kallisto_compl
 					else:
 						update_status(accession, "faster-dump & pigz failed")
 						logger.error(f"All attempts exhausted for {accession}, marking as failed")
+						fasterq_failed = True
+						shutil.rmtree(acc_dir)
 						with open(failed_accessions_file, 'a') as out:
 							out.write(f'{accession}\n')
 							out.flush()
 							os.fsync(out.fileno())
+			if fasterq_failed:
+				kallisto_queue.task_done()
+				continue
 
 		for folder in Path(results_tmp_folder).iterdir():
 			kallisto_completed_accessions_file = os.path.join(folder, 'kallisto_quant_completed_accessions.txt')
@@ -1114,7 +1121,7 @@ def fasterqdump_kallisto_worker(fasterqpigz_completed_accessions, kallisto_compl
 				logger.info("Number of FASTQ file folders detected: " + str(len(single_read_file_folders)) + "\n")
 
 				# --- prepare jobs to run --- #
-				jobs_to_run = get_data_for_jobs_to_run(readfile_status, logger, single_read_file_folders, kallistodir,index_file, tmpdir)
+				jobs_to_run = get_data_for_jobs_to_run(readfile_status, logger, single_read_file_folders, kallistodir,index_file, folder)
 				logger.info("Number of jobs to run: " + str(len(jobs_to_run)) + "\n")
 
 				# --- run jobs --- #
@@ -1616,9 +1623,11 @@ def main(arguments):
 				for accession in sra_accessions:
 					fully_done = all(accession in kallisto_completion_tracker[ref] for ref in kallisto_completion_tracker)
 					if fully_done:
+						update_status(accession, "completed")
 						continue
 					if accession in prefetch_completed_accessions:
 						kallisto_queue.put(accession)
+						update_status(accession, "prefetch done; queued for next steps") #to make accessions immediately visible in dashboard after restart or resume
 						requeued_count += 1
 					else:
 						accessions_needing_prefetch.append(accession)
