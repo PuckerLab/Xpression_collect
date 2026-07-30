@@ -1,7 +1,7 @@
 ### Shakunthala Natarajan ###
 ### bug reports: s64snata@uni-bonn.de ###
 
-__version__= "0.4.0" #latest version
+__version__= "0.4.0" # latest version
 __usage__="""
 			python3 Xpression_collector.py
 			--input_config <Full path to tab separated config file specifying the reference name, full path to CDS file, and full path to GFF file>
@@ -737,35 +737,6 @@ def generate_mapping_table(logger, gff_file):
 						logger.error(line)
 			line = f.readline()
 	return transcript2gene
-
-
-def map_counts_to_genes(transcript2gene, counts):
-	"""! @brief map transcript counts to parent genes """
-
-	gene_counts = {}
-	for key in counts.keys():
-		try:
-			gene_counts[transcript2gene[key]] += counts[key]
-		except KeyError:
-			try:
-				gene_counts.update({transcript2gene[key]: counts[key]})
-			except KeyError:
-				gene_counts.update({key: counts[key]})
-	return sorted_gene_counts
-
-
-def generate_output_file(output_file, data):
-	"""! @brief generate output file for given data dictionary """
-
-	samples = list(sorted(list(data.keys())))
-
-	with open(output_file, "w") as out:
-		out.write("\t".join(['gene'] + samples) + '\n')
-		for gene in list(sorted(list(data.values())[0].keys())):
-			new_line = [gene]
-			for sample in samples:
-				new_line.append(data[sample][gene])
-			out.write("\t".join(map(str, new_line)) + '\n')
 
 #function to merge and stack dataframes column-wise to obtain merged tpms, counts files
 def merge_samplewise_tpms_counts_files(folder, out_file):
@@ -1805,20 +1776,17 @@ def main(arguments):
 				if "_" in ID:  # only take ID if datetime string was included in file name
 					ID = ID.split("_")[-1]
 				counts, tpms = load_counttable(filename)
-				# TPM are available and could be processed in the same way
-				gene_counts = map_counts_to_genes(transcript2gene, counts)
-				gene_tpms = map_counts_to_genes(transcript2gene, tpms)
 				sample_counts_file = os.path.join(temp_counts_folder, f'{ID}.counts.tsv')
 				sample_tpms_file = os.path.join(temp_tpms_folder, f'{ID}.tpms.tsv')
 
 				with open(sample_counts_file, "w") as out:
 					out.write("\t".join(['gene', ID]) + '\n')
-					out.write('\n'.join(f"{gene}\t{value}" for gene, value in gene_counts.items()))
+					out.write('\n'.join(f"{gene}\t{value}" for gene, value in counts.items()))
 					out.write('\n')
 
 				with open(sample_tpms_file, "w") as out:
 					out.write("\t".join(['gene', ID]) + '\n')
-					out.write('\n'.join(f"{gene}\t{value}" for gene, value in gene_tpms.items()))
+					out.write('\n'.join(f"{gene}\t{value}" for gene, value in tpms.items()))
 					out.write('\n')
 
 			merge_samplewise_tpms_counts_files(temp_counts_folder, countsfile)
