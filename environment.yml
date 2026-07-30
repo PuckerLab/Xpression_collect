@@ -14,8 +14,8 @@ dependencies:
   - rich #optional
   
   # External tools
-  - kallisto
-  - busco
-  - sra-tools
-  - kingfisher
+  - kallisto=0.52.0
+  - busco=6.1.0
+  - sra-tools=3.4.1
+  - kingfisher=0.5.0
 
