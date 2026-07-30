@@ -61,7 +61,8 @@ RUN mkdir -p /tools /data/sra_cache && \
 RUN conda create -p /tools/xpcollect_env python=3.12.7 -y && \
     conda install -p /tools/xpcollect_env -c conda-forge -c bioconda \
         busco=6.1.0 \
-        kallisto \
+        kallisto=0.52.0 \
+        kingfisher=0.5.0 \
         perl-sort-naturally \
         perl-clone \
         perl-http-message \
