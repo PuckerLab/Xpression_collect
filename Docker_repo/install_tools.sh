@@ -9,25 +9,27 @@ echo "Installing bioinformatics tools..."
 
 
 # Install SRA Toolkit
-if [ ! -d "/tools/sratoolkit" ]; then
-    echo "Installing SRA Toolkit..."
-    wget -q --show-progress \
-        --output-document /tools/sratoolkit.tar.gz \
-        https://ftp-trace.ncbi.nlm.nih.gov/sra/sdk/current/sratoolkit.current-ubuntu64.tar.gz
-    tar -xzf /tools/sratoolkit.tar.gz -C /tools/
-    # Rename versioned dir to stable name (e.g. sratoolkit.3.1.1-ubuntu64 → sratoolkit)
-    mv /tools/sratoolkit.*-ubuntu64 /tools/sratoolkit
-    rm -f /tools/sratoolkit.tar.gz
+SRA_VERSION="3.4.1"
 
-    # Configure cache directory non-interactively (no vdb-config -i needed)
-    mkdir -p /root/.ncbi /data/sra_cache
-    cat > /root/.ncbi/user-settings.mkfg << EOF
+if [ ! -d "/tools/sratoolkit" ]; then
+		echo "Installing SRA Toolkit ${SRA_VERSION}..."
+		wget -q --show-progress \
+				--output-document /tools/sratoolkit.tar.gz \
+				"https://ftp-trace.ncbi.nlm.nih.gov/sra/sdk/${SRA_VERSION}/sratoolkit.${SRA_VERSION}-ubuntu64.tar.gz"
+		tar -xzf /tools/sratoolkit.tar.gz -C /tools/
+		# Rename versioned dir to stable name (e.g. sratoolkit.3.4.1-ubuntu64 → sratoolkit)
+		mv /tools/sratoolkit.${SRA_VERSION}-ubuntu64 /tools/sratoolkit
+		rm -f /tools/sratoolkit.tar.gz
+
+		# Configure cache directory non-interactively (no vdb-config -i needed)
+		mkdir -p /root/.ncbi /data/sra_cache
+		cat > /root/.ncbi/user-settings.mkfg << EOF
 /repository/user/main/public/enabled = "true"
 /repository/user/main/public/root = "/data/sra_cache"
 EOF
-    echo "✓ SRA Toolkit installed, cache → /data/sra_cache"
+		echo "✓ SRA Toolkit ${SRA_VERSION} installed, cache → /data/sra_cache"
 else
-    echo "✓ SRA Toolkit already installed"
+		echo "✓ SRA Toolkit already installed"
 fi
 
 
