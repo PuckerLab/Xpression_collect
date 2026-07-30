@@ -65,7 +65,8 @@ Xpression_collector is a simple Python-based pipeline for fetching RNA-seq reads
 
 ## Workflow
 
-<img width="5676" height="6723" alt="Xpression_collector" src="https://github.com/user-attachments/assets/0978c426-ba5a-463e-aa2b-5365d2cb852d" />
+<img width="7221" height="8192" alt="Xpression_collector drawio(3)" src="https://github.com/user-attachments/assets/0ae4a050-2d40-4ecb-8266-73ea39d71ed5" />
+
 
 ## Installation and dependencies
 
