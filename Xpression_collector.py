@@ -739,7 +739,7 @@ def generate_mapping_table(logger, gff_file):
 	return transcript2gene
 
 
-def map_counts_to_genes(logger, transcript2gene, counts):
+def map_counts_to_genes(transcript2gene, counts):
 	"""! @brief map transcript counts to parent genes """
 
 	gene_counts = {}
@@ -751,7 +751,7 @@ def map_counts_to_genes(logger, transcript2gene, counts):
 				gene_counts.update({transcript2gene[key]: counts[key]})
 			except KeyError:
 				gene_counts.update({key: counts[key]})
-	return gene_counts
+	return sorted_gene_counts
 
 
 def generate_output_file(output_file, data):
@@ -1806,8 +1806,8 @@ def main(arguments):
 					ID = ID.split("_")[-1]
 				counts, tpms = load_counttable(filename)
 				# TPM are available and could be processed in the same way
-				gene_counts = map_counts_to_genes(logger, transcript2gene, counts)
-				gene_tpms = map_counts_to_genes(logger, transcript2gene, tpms)
+				gene_counts = map_counts_to_genes(transcript2gene, counts)
+				gene_tpms = map_counts_to_genes(transcript2gene, tpms)
 				sample_counts_file = os.path.join(temp_counts_folder, f'{ID}.counts.tsv')
 				sample_tpms_file = os.path.join(temp_tpms_folder, f'{ID}.tpms.tsv')
 
