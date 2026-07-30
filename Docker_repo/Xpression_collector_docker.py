@@ -1,15 +1,23 @@
 ### Shakunthala Natarajan ###
 ### bug reports: s64snata@uni-bonn.de ###
 
-__version__= "0.3.0"
+__version__= "0.4.0" # latest version
 __usage__="""
 			python3 Xpression_collector.py
-			--cds <Full path to CDS file>
+			--input_config <Full path to tab separated config file specifying the reference name, full path to CDS file, and full path to GFF file>
+							First column has the reference name, TAIR10 for example, second and third columns need the full path to CDS and GFF files
+							for the specific reference; Providing the CDS file path is mandatory while the GFF file is optional.
+							Xpression_collector thereby supports expression analysis of the accessions using multiple references. So different references
+							can be specified one per line along with the other columnar details in the input confog file>
 			--sample_name <Name of the sample you are analyzing>
 			--sra <Full path to TXT file with one SRA accession per line>
+			--fetch <Method of fetching the accessions> sratoolkit | kingfisher; default is sratoolkit
+			--fetch_fallback <Option to fallback to sratoolkit in case kingfisher ena-ftp is chosen as the fetch method> no by default
+			--kingfisher <Full path to kingfisher executable>
 			--min_sra_file_size <Minimum file size cutoff in MB to check prefetched SRA file sizes to cath sralite files that might cause downstream errors> default cutoff is 1MB
-			--gff <Full path to GFF file if isoform removal needs to be performed>
-			--gff_config <Full path to GFF config file specifying the different GFF attributes - child_attribute, child_parent_linker, parent_attribute> default attributes are ID, Parent, ID respectively
+			--gff_config <Full path to GFF config file specifying the reference name in the first column followed by the different GFF attributes - 
+						child_attribute, child_parent_linker, parent_attribute> default attributes are ID, Parent, ID respectively>
+						This reference name should match the reference name in the input config file
 			--uncompressed <Provide this flag if your read files are uncompressed>
 			--annotation_qc <yes or no for BUSCO-based QC of the PEP file> default is yes
 			--threads <Total number of cores for running the pipeline> default is 4
@@ -17,8 +25,17 @@ __usage__="""
 			--attempts <Number of attempts at prefetching and accession from SRA> default is just 1 attempt
 			--wait <Base wait time for sleep in case of network delays for prefetch; Increases exponentially with a base of 2 for each reattempt> default is 20 seconds
 			--remove_isoforms <Optional step to remove isoforms>< yes or no> default is yes
+			'--only_merge' <Inserting this flag triggers only tpm and repr tpm file merging and not the entire expression analysis run>
 			--merge_tpms <Full path to config file containing the full paths to the filtered_tpm, and/or repr_filtered_tpms to be merged>
 						 <First column will have paths to filtered_tpm files one per line; Second column will have paths to filtered_repr_tpm files one per line>
+			--only_merge' <Inserting this flag triggers only tpm and repr tpm file merging and not the entire expression analysis run>
+							But the standalone merge can work out only if the output folder specified already has a set of output files from a previous
+							Xpression_collector run;
+							The difference between --merge_tpms and --only_merge is that the former can carry out accession fetching and expression analysis run and do the merging
+							of the config specified files with the results produced in that run. Whereas with --only_merge the fetching of accessions and expression
+							analysis steps are skipped, the script checks if the output files sample_unfiltered.tpms.tsv, sample_unfiltered.repr.tpms.tsv, sample.tpms.tsv
+							sample.repr.tpms.tsv, sample.pep.fasta, sample.repr.pep.fasta, sample.repr.cds.fasta are already present in the putput folder specified and if so, 
+							activates the merge of all of them.
 			--min <Minimum percentage expression of top 100 genes>
 			--max <Maximum percentage expression of top 100 genes>
 			--black <SRA IDs to be removed or blacklisted in a TXT file with one SRA accession ID per line>
@@ -104,6 +121,10 @@ def build_dashboard():
 	# --- per accession rows ---
 	for accession, stage in status.items():
 		color = {
+			"ena-ftp fetch": "cyan",
+			"ena-ftp not successful, falling back to prefetch": "red",
+			"ena-ftp failed": "red",
+			"prefetch done; queued for next steps.": "cyan",
 			"prefetching": "cyan",
 			"prefetch failed": "red",
 			"fasterq-dump & pigz": "yellow",
@@ -341,7 +362,7 @@ def clean_headers_for_busco(gene_id):
 	return safe_gene_id
 
 #function to run BUSCO
-def run_busco(logger, orgname, fasta_file, busco_path, busco_dir, busco_dir_final, busco_threads_per_organism, org_type,host_cache_dir, busco_db_dir, buscolineage):
+def run_busco(ref, logger, orgname, fasta_file, busco_path, busco_dir, busco_dir_final, busco_threads_per_organism, org_type,host_cache_dir, busco_db_dir, buscolineage):
 	#code to create a temp CDS fasta file to clean headers and use this clean protein file for busco analysis - this temp file will be deleted after the busco run completes
 	tmp_fasta = os.path.join(busco_dir, f"{orgname}_temp.cds.fasta")
 	try:
@@ -355,23 +376,23 @@ def run_busco(logger, orgname, fasta_file, busco_path, busco_dir, busco_dir_fina
 					outfile.write(line)
 		if org_type == 'eukaryote':
 			if buscolineage=='auto':
-				cmd = busco_path + ' -i ' + tmp_fasta + ' -m proteins --auto-lineage-euk -q -o ' + orgname + ' -c ' + busco_threads_per_organism + ' --out_path ' + busco_dir + ' --download_path ' + busco_db_dir
+				cmd = busco_path + ' -i ' + tmp_fasta + ' -m proteins --auto-lineage-euk -q -o ' + ref + ' -c ' + busco_threads_per_organism + ' --out_path ' + busco_dir + ' --download_path ' + busco_db_dir
 			else:
 				lineage=buscolineage
-				cmd = busco_path + ' -i ' + tmp_fasta + ' -m proteins -l '+ lineage + ' -q -o ' + orgname + ' -c ' + busco_threads_per_organism + ' --out_path ' + busco_dir + ' --download_path ' + busco_db_dir
+				cmd = busco_path + ' -i ' + tmp_fasta + ' -m proteins -l '+ lineage + ' -q -o ' + ref + ' -c ' + busco_threads_per_organism + ' --out_path ' + busco_dir + ' --download_path ' + busco_db_dir
 		elif org_type == 'prokaryote':
 			if buscolineage=='auto':
-				cmd = busco_path + ' -i ' + tmp_fasta + ' -m proteins --auto-lineage-prok -q -o ' + orgname + ' -c ' + busco_threads_per_organism + ' --out_path ' + busco_dir + ' --download_path ' + busco_db_dir
+				cmd = busco_path + ' -i ' + tmp_fasta + ' -m proteins --auto-lineage-prok -q -o ' + ref + ' -c ' + busco_threads_per_organism + ' --out_path ' + busco_dir + ' --download_path ' + busco_db_dir
 			else:
 				lineage=buscolineage
-				cmd = busco_path + ' -i ' + tmp_fasta + ' -m proteins -l ' + lineage + ' -q -o ' + orgname + ' -c ' + busco_threads_per_organism + ' --out_path ' + busco_dir + ' --download_path ' + busco_db_dir
+				cmd = busco_path + ' -i ' + tmp_fasta + ' -m proteins -l ' + lineage + ' -q -o ' + ref + ' -c ' + busco_threads_per_organism + ' --out_path ' + busco_dir + ' --download_path ' + busco_db_dir
 		p = subprocess.Popen(args=cmd, shell=True)
 		p.communicate()
 	finally:
 		#remove the temporary pep fasta file
 		if os.path.exists(tmp_fasta):
 			os.remove(tmp_fasta)
-	species_dir = Path(busco_dir) / orgname
+	species_dir = Path(busco_dir) / ref
 	# Get all run_* folders (ignore auto_lineage and subdirs of auto_lineage)
 	run_dirs = [
 		p for p in species_dir.iterdir()
@@ -717,38 +738,16 @@ def generate_mapping_table(logger, gff_file):
 			line = f.readline()
 	return transcript2gene
 
-
-def map_counts_to_genes(logger, transcript2gene, counts):
-	"""! @brief map transcript counts to parent genes """
-
-	error_collector = []
-	gene_counts = {}
-	for key in counts.keys():
-		try:
-			gene_counts[transcript2gene[key]] += counts[key]
-		except KeyError:
-			try:
-				gene_counts.update({transcript2gene[key]: counts[key]})
-			except KeyError:
-				error_collector.append(key)
-				gene_counts.update({key: counts[key]})
-	if len(error_collector) > 0:
-		logger.info("number of unmapped transcripts: " + str(len(error_collector)) + "\n")
-	return gene_counts
-
-
-def generate_output_file(output_file, data):
-	"""! @brief generate output file for given data dictionary """
-
-	samples = list(sorted(list(data.keys())))
-
-	with open(output_file, "w") as out:
-		out.write("\t".join(['gene'] + samples) + '\n')
-		for gene in list(sorted(list(data.values())[0].keys())):
-			new_line = [gene]
-			for sample in samples:
-				new_line.append(data[sample][gene])
-			out.write("\t".join(map(str, new_line)) + '\n')
+#function to merge and stack dataframes column-wise to obtain merged tpms, counts files
+def merge_samplewise_tpms_counts_files(folder, out_file):
+	files = glob.glob(os.path.join(folder, "*.tsv"))
+	dfs = []
+	for f in files:
+		df = pd.read_csv(f, sep='\t', index_col='gene')
+		dfs.append(df)
+	merged = pd.concat(dfs, axis=1, join='outer')#axis 1 stacks data column-wise, outer join retains all transcripts in the df and fills the missing ones with the value given for na_rep
+	merged.index.name = 'gene'
+	merged.to_csv(out_file, sep='\t')
 
 #function to read tpm/ counts TXT files for combining them
 def read_tpm_file(filename):
@@ -819,6 +818,7 @@ def keep_primary_transcript_exp(repr_ids, repr_tpm_file, primary_transcript_cds_
 				primary_transcripts.append(line[1:].strip())
 
 	df = pd.read_csv(exp_file, sep='\t', index_col='gene')
+	df = df.copy()#to avoid fragmentation of blocks in downstream processing
 	original_transcript_order = df.index.tolist()#obtaining the transcript order from the original file
 
 	result_rows = []
@@ -837,10 +837,10 @@ def keep_primary_transcript_exp(repr_ids, repr_tpm_file, primary_transcript_cds_
 	df_unmapped = df[~df.index.isin(all_mapped_transcripts)]#dataframe with transcripts not found in the repr_ids dic mapping
 
 	df_total = pd.concat([df_summed, df_unmapped])
-	df_total = df_total.reset_index()
+	df_total = df_total.copy()#de-fragmenting the df to avoid it from remaining fragmented in the subsequent ordering steps and increase efficiency of the merge
 	#preserving original transcript order in the isoform purged file
-	retained_order = [t for t in original_transcript_order if t in df_total['gene'].values]
-	df_total = df_total.set_index('gene').loc[retained_order].reset_index()
+	retained_order = [t for t in original_transcript_order if t in df_total.index]
+	df_total = df_total.loc[retained_order].reset_index()
 
 	if '.tpm' in exp_file:
 		df_total.to_csv(repr_tpm_file, sep="\t", index=False)
@@ -901,6 +901,7 @@ def merge_expression_tsvs(base_file, additional_files):
 
 	dfs = [pd.read_csv(f, sep='\t', index_col='gene') for f in all_files]
 	merged = reduce(lambda left, right: left.join(right, how='inner'), dfs)
+	merged = merged.copy()#to avoid fragmented dataframe warning
 	return merged.reset_index()
 
 #function for removing alternate transcripts from the peptide FASTA file
@@ -1022,7 +1023,7 @@ def isoform_clean(gff3_input_file, cds_dict, no_trans_cds, child_attribute, chil
 	return repr_ids
 
 # function to perform kallisto quantification as soon as SRA file is fetched
-def fasterqdump_kallisto_worker(fasterqpigz_completed_accessions, kallisto_completed_accessions, index_file, sradir, readfile_status, logger, kallistodir, kallisto, cores,tmpdir, fasterq_dump, attempts, base_wait, failed_accessions_file,fasterqpigz_completed_accessions_file,kallisto_completed_accessions_file,subprocess_log):
+def fasterqdump_kallisto_worker(fasterqpigz_completed_accessions, kallisto_completion_tracker, results_tmp_folder, sradir, readfile_status, logger, kallisto, cores,tmpdir, fasterq_dump, attempts, base_wait, failed_accessions_file,fasterqpigz_completed_accessions_file,subprocess_log):
 	while True:
 		accession = kallisto_queue.get()
 		if accession is barrier:
@@ -1032,6 +1033,7 @@ def fasterqdump_kallisto_worker(fasterqpigz_completed_accessions, kallisto_compl
 		# Run fasterq-dump and Kallisto
 		if accession not in fasterqpigz_completed_accessions:
 			update_status(accession, "fasterq-dump & pigz")
+			fasterq_failed = False
 			for attempt in range(attempts):
 				try:
 					# fasterq-dump
@@ -1075,9 +1077,9 @@ def fasterqdump_kallisto_worker(fasterqpigz_completed_accessions, kallisto_compl
 				except RuntimeError as e:
 					logger.warning(f"Attempt {attempt + 1} failed for {accession}: {e}")
 					# clean up partial files before retrying
-					if os.path.exists(acc_dir):
-						shutil.rmtree(acc_dir)
-						os.makedirs(acc_dir, exist_ok=True)
+					for f in os.listdir(acc_dir):
+						if not f.endswith('.sra'):
+							os.remove(os.path.join(acc_dir, f))
 					if attempt < attempts - 1:
 						wait = base_wait * (2 ** attempt)
 						logger.info(f"Retrying {accession} in {wait}s")
@@ -1085,27 +1087,96 @@ def fasterqdump_kallisto_worker(fasterqpigz_completed_accessions, kallisto_compl
 					else:
 						update_status(accession, "faster-dump & pigz failed")
 						logger.error(f"All attempts exhausted for {accession}, marking as failed")
+						fasterq_failed = True
+						shutil.rmtree(acc_dir)
 						with open(failed_accessions_file, 'a') as out:
 							out.write(f'{accession}\n')
 							out.flush()
 							os.fsync(out.fileno())
+			if fasterq_failed:
+				kallisto_queue.task_done()
+				continue
 
-		if accession not in kallisto_completed_accessions:
-			update_status(accession, "kallisto")
-			# --- load data --- #
-			acc_dir = os.path.join(sradir, accession)
-			single_read_file_folders = [acc_dir]
-			logger.info("Number of FASTQ file folders detected: " + str(len(single_read_file_folders)) + "\n")
+		for folder in Path(results_tmp_folder).iterdir():
+			kallisto_completed_accessions_file = os.path.join(folder, 'kallisto_quant_completed_accessions.txt')
+			ref = folder.name
+			kallisto_completed_accessions = kallisto_completion_tracker[ref]
+			kallistodir = os.path.join(folder, 'Kallisto_abundances')
+			index_file = os.path.join(folder, 'index')
+			if accession not in kallisto_completed_accessions:
+				update_status(accession, "kallisto")
+				# --- load data --- #
+				acc_dir = os.path.join(sradir, accession)
+				single_read_file_folders = [acc_dir]
+				logger.info("Number of FASTQ file folders detected: " + str(len(single_read_file_folders)) + "\n")
 
-			# --- prepare jobs to run --- #
-			jobs_to_run = get_data_for_jobs_to_run(readfile_status, logger, single_read_file_folders, kallistodir,index_file, tmpdir)
-			logger.info("Number of jobs to run: " + str(len(jobs_to_run)) + "\n")
+				# --- prepare jobs to run --- #
+				jobs_to_run = get_data_for_jobs_to_run(readfile_status, logger, single_read_file_folders, kallistodir,index_file, folder)
+				logger.info("Number of jobs to run: " + str(len(jobs_to_run)) + "\n")
 
-			# --- run jobs --- #
-			job_executer(accession, logger, jobs_to_run, kallisto, cores, kallisto_completed_accessions_file,failed_accessions_file,subprocess_log)
-			#remove the accession SRA folder after kallisto is completed for that accession
-			shutil.rmtree(acc_dir)
+				# --- run jobs --- #
+				job_executer(accession, logger, jobs_to_run, kallisto, cores, kallisto_completed_accessions_file,failed_accessions_file,subprocess_log)
+		#remove the accession SRA folder after kallisto is completed for that accession
+		shutil.rmtree(acc_dir)
 		kallisto_queue.task_done()
+
+#function to provide option for direct download of the accession via ena-ftp with kingfisher-download
+def kingfisher_ena_fetch(fetch_fallback, prefetch_completed_accessions, fasterqpigz_completed_accessions,
+						  kingfisher, accession, threads, attempts, sradir, prefetch_command,
+						  minimum_sra_file_size_threshold, base_wait, failed_accessions_file,
+						  prefetch_completed_accessions_file, fasterqpigz_completed_accessions_file,
+						  logger, subprocess_log):
+	if accession in prefetch_completed_accessions:
+		return  # already resolved in a prior run
+
+	update_status(accession, "ena-ftp fetch")
+	acc_dir = os.path.join(sradir, accession)
+
+	for attempt in range(attempts):
+		try:
+			if os.path.exists(acc_dir):
+				shutil.rmtree(acc_dir)
+			os.makedirs(acc_dir, exist_ok=True)
+
+			cmd = f"{kingfisher} get -r {accession} -m ena-ftp --output-directory {acc_dir} --download-threads {threads}"
+			result = subprocess.run(cmd, shell=True, stdout=subprocess_log, stderr=subprocess_log)
+			if result.returncode != 0:
+				raise RuntimeError(f"kingfisher ena-ftp fetch failed for {accession} with code {result.returncode}")
+
+			gz_files = glob.glob(os.path.join(acc_dir, "*.gz"))
+			if not (gz_files and all(os.path.getsize(f) > 0 for f in gz_files)):
+				raise RuntimeError(f"ena-ftp fetch for {accession} produced no valid fastq.gz files")
+
+			# success -> this accession is already past the fasterq-dump/pigz stage
+			fasterqpigz_completed_accessions.add(accession)
+			with open(prefetch_completed_accessions_file, 'a') as out:
+				out.write(f'{accession}\n'); out.flush(); os.fsync(out.fileno())
+			with open(fasterqpigz_completed_accessions_file, 'a') as out:
+				out.write(f'{accession}\n'); out.flush(); os.fsync(out.fileno())
+			kallisto_queue.put(accession)
+			return
+
+		except RuntimeError as e:
+			logger.warning(f"ena-ftp attempt {attempt + 1} failed for {accession}: {e}")
+			if os.path.exists(acc_dir):
+				shutil.rmtree(acc_dir)
+			if attempt < attempts - 1:
+				wait = base_wait * (2 ** attempt)
+				logger.info(f"Retrying ena-ftp for {accession} in {wait}s")
+				time.sleep(wait)
+	if fetch_fallback == 'yes':
+		update_status(accession, "ena-ftp not successful, falling back to prefetch")
+		logger.error(f"All ena-ftp attempts exhausted for {accession}; falling back to sratoolkit prefetch")
+		parallel_prefetch(prefetch_completed_accessions, accession, attempts, sradir, prefetch_command,
+						   minimum_sra_file_size_threshold, base_wait, failed_accessions_file,
+						   prefetch_completed_accessions_file, logger, subprocess_log)
+	elif fetch_fallback == 'no':
+		update_status(accession, "ena-ftp failed")
+		logger.error(f"All ena-ftp attempts exhausted for {accession}")
+		with open(failed_accessions_file, 'a') as out:
+			out.write(f'{accession}\n')
+			out.flush()
+			os.fsync(out.fileno())
 
 #function to control fetching of SRA files through parallelized prefetch
 def parallel_prefetch(prefetch_completed_accessions, accession, attempts,sradir, prefetch_command, minimum_sra_file_size_threshold, base_wait, failed_accessions_file, prefetch_completed_accessions_file, logger,subprocess_log):
@@ -1153,6 +1224,21 @@ def parallel_prefetch(prefetch_completed_accessions, accession, attempts,sradir,
 						os.fsync(out.fileno())
 
 def main(arguments):
+
+	if '--fetch' in arguments:#kingfisher or sratoolkit; default is sratoolkit
+		fetch = arguments[arguments.index('--fetch')+1]
+	else:
+		fetch = 'sratoolkit'
+
+	if '--kingfisher' in arguments:#full path to kingfisher
+		kingfisher = arguments[arguments.index('--kingfisher')+1]
+	else:
+		kingfisher = '/tools/xpcollect_env/bin/kingfisher'
+
+	if '--fetch_fallback' in arguments:#Option to fallback to sratoolkit in case kingfisher ena-ftp is chosen as the fetch method; no by default
+		fetch_fallback = arguments[arguments.index('--fetch_fallback')+1]
+	else:
+		fetch_fallback = 'no'
 	if '--sample_name' in arguments:
 		orgname = arguments[arguments.index('--sample_name')+1]
 	else:
@@ -1164,43 +1250,46 @@ def main(arguments):
 		else:
 			print('File with SRA accessions list missing. Exiting...')
 			sys.exit(__usage__)
-	if '--gff' in arguments:
-		gff_file=arguments[arguments.index('--gff')+1]
-		if os.path.isfile(gff_file):
-			pass
-		else:
-			print('GFF file missing. Exiting...')
-			sys.exit(__usage__)
+
 	# gff file config params
+	gff_config_dic = {}
 	if '--gff_config' in arguments:
 		gff_config_file = arguments[arguments.index('--gff_config') + 1]
 		if os.path.isfile(gff_config_file):
-			pass
+			with open(gff_config_file, 'r') as f:
+				for line in f:
+					parts = line.strip().split()
+					gff_config_dic[parts[0]] = {'child_attribute': parts[1], 'child_parent_linker': parts[2],'parent_attribute': parts[3]}
 		else:
 			print('GFF config file missing. Exiting...')
 			sys.exit(__usage__)
-		with open(gff_config_file, 'r') as f:
-			for line in f:
-				parts = line.strip().split()
-				child_attribute = parts[0]
-				child_parent_linker = parts[1]
-				parent_attribute = parts[2]
+
 	else:
-		child_attribute = 'ID'
-		child_parent_linker = 'Parent'
-		parent_attribute = 'ID'
+		gff_config_dic['default'] = {'child_attribute': 'ID', 'child_parent_linker': 'Parent','parent_attribute': 'ID'}
+
 	if '--fastq_pattern' in arguments:
 		pattern_names = arguments[arguments.index('--fastq_pattern')+1]#specify fastq read file name pattern for the paired end files separated by commas without spaces like - _pass_1,_pass_2_
 		pattern_names_list = pattern_names.split(',')
 	else:
 		pattern_names_list = ["_pass_1", "_pass_2"]
 
-	cds_file = arguments[arguments.index('--cds')+1]#full path to CDS file
-	if os.path.isfile(cds_file):
-		pass
-	else:
-		print('CDS file missing. Exiting...')
-		sys.exit(__usage__)
+	multi_ref_dic = {}
+	multi_ref_gff_dic = {}
+	multi_ref_config_file = arguments[arguments.index('--input_config')+1]
+	with open (multi_ref_config_file,'r') as f:
+		for line in f:
+			parts = line.strip('\n').split()
+			if os.path.isfile(parts[1]):
+				multi_ref_dic[parts[0]] = parts[1]
+			else:
+				print(f'CDS file missing for {parts[0]}. Exiting...')
+				sys.exit(__usage__)
+			if len(parts)>2:
+				if os.path.isfile(parts[2]):
+					multi_ref_gff_dic[parts[0]] = parts[2]
+				else:
+					print(f'GFF file missing for {parts[0]}. Exiting...')
+					sys.exit(__usage__)
 
 	if '--annotation_qc' in arguments:# yes or no for BUSCO-based QC of the PEP file
 		qc = arguments[arguments.index('--annotation_qc')+1]
@@ -1240,22 +1329,23 @@ def main(arguments):
 		container_path = "NA"
 
 	if '--organism_type' in arguments:
-		org_type = arguments[arguments.index('--organism_type') + 1]
+		org_type = arguments[arguments.index('--organism_type')+1]
 	else:
 		org_type = 'eukaryote'
 
-	if '--kallisto' in arguments:  # full path to kallisto
-		kallisto = arguments[arguments.index('--kallisto') + 1]
+	if '--kallisto' in arguments:#full path to kallisto
+		kallisto = arguments[arguments.index('--kallisto')+1]
 	else:
 		kallisto = "/tools/xpcollect_env/bin/kallisto"
 
-	if '--fasterq-dump' in arguments:  # full path to fasterq-dump from NCBI SRA toolkit
-		fasterq_dump = arguments[arguments.index('--fasterq-dump') + 1]
+	if '--fasterq-dump' in arguments:#full path to fasterq-dump from NCBI SRA toolkit
+		fasterq_dump = arguments[arguments.index('--fasterq-dump')+1]
 	else:
 		fasterq_dump = '/tools/sratoolkit/bin/fasterq-dump'
 
+
 	if '--prefetch' in arguments:
-		prefetch_command = arguments[arguments.index('--prefetch') + 1]
+		prefetch_command = arguments[arguments.index('--prefetch')+1]
 	else:
 		prefetch_command = "/tools/sratoolkit/bin/prefetch"
 
@@ -1336,7 +1426,7 @@ def main(arguments):
 			tmpdir += "/"
 
 	if '--sra' in arguments:
-		sradir = os.path.join(tmpdir, 'SRA')
+		sradir=os.path.join(tmpdir,'SRA')
 		if not os.path.exists(sradir):
 			os.makedirs(sradir)
 
@@ -1344,10 +1434,6 @@ def main(arguments):
 		storage_threshold_percent = float(arguments[arguments.index('--storage_percentage')+1])
 	else:
 		storage_threshold_percent = 75.0
-
-	kallistofinaldir = os.path.join(outdir, 'Kallisto_run_final')
-	if not os.path.exists(kallistofinaldir):
-		os.makedirs(kallistofinaldir)
 
 	#flag to obtain number of attempts at prefetching and accession from SRA; Default is just 1 attempt
 	if '--attempts' in arguments:
@@ -1371,6 +1457,11 @@ def main(arguments):
 	else:
 		minimum_sra_file_size_threshold = 1
 
+	if '--only_merge' in arguments:# inserting this flag triggers only tpm and repr tpm file merging and not the entire expression analysis run
+		standalone_merge = 'yes'
+	else:
+		standalone_merge = 'no'
+
 	merge_filtered_tpm= []
 	merge_filtered_repr_tpm = []
 	if '--merge_tpms' in arguments:#full path to config file containing the full paths to the filtered_tpm, and/or repr_filtered_tpms to be merged; first column will have paths to filtered_tpm files one per line; second column will have paths to filtered_repr_tpm files one per line
@@ -1387,446 +1478,569 @@ def main(arguments):
 
 	logger.info("Welcome to Xpression_collector!")
 
-	#code block to obtain PEP file from CDS file
+	results_out_folder = os.path.join(outdir, 'Results')
+	if not os.path.exists(results_out_folder):
+		os.mkdir(results_out_folder)
+	results_tmp_folder = os.path.join(tmpdir, 'Tmp_results')
+	if not os.path.exists(results_tmp_folder):
+		os.mkdir(results_tmp_folder)
 
-	input_spec = cds_file
-	output_spec = os.path.join(outdir,f'{orgname}.pep.fasta')
-	internal_stop_to_x = ('--internal-stop-to-x' in arguments)
+	#modified code to support multiple references
+	for ref in multi_ref_dic.keys():
+		ref_specific_out_folder = os.path.join(results_out_folder,ref)
+		if not os.path.exists(ref_specific_out_folder):
+			os.mkdir(ref_specific_out_folder)
+		ref_specific_tmp_folder = os.path.join(results_tmp_folder, ref)
+		if not os.path.exists(ref_specific_tmp_folder):
+			os.mkdir(ref_specific_tmp_folder)
 
-	# Standard code table (nuclear, 1)
-	genetic_code = {
-		'CTT':'L','ATG':'M','AAG':'K','AAA':'K','ATC':'I','AAC':'N','ATA':'I','AGG':'R',
-		'CCT':'P','ACT':'T','AGC':'S','ACA':'T','AGA':'R','CAT':'H','AAT':'N','ATT':'I',
-		'CTG':'L','CTA':'L','CTC':'L','CAC':'H','ACG':'T','CCG':'P','AGT':'S','CAG':'Q',
-		'CAA':'Q','CCC':'P','TAG':'*','TAT':'Y','GGT':'G','TGT':'C','CGA':'R','CCA':'P',
-		'TCT':'S','GAT':'D','CGG':'R','TTT':'F','TGC':'C','GGG':'G','TGA':'*','GGA':'G',
-		'TGG':'W','GGC':'G','TAC':'Y','GAG':'E','TCG':'S','TTA':'L','GAC':'D','TCC':'S',
-		'GAA':'E','TCA':'S','GCA':'A','GTA':'V','GCC':'A','GTC':'V','GCG':'A','GTG':'V',
-		'TTC':'F','GTT':'V','GCT':'A','ACC':'T','TTG':'L','CGT':'R','TAA':'*','CGC':'R'
-	}
-
-	inputs = gather_inputs(input_spec)
-
-	# If multiple inputs but output_spec is a file path, abort to avoid overwriting
-	if len(inputs) > 1 and (not output_spec.endswith(os.sep) and not os.path.isdir(output_spec)):
-		sys.exit("[ERROR] For multiple input files, --out must be a directory or end with '/'.")
-	if output_spec.endswith(os.sep):
-		os.makedirs(output_spec, exist_ok=True)
-
-	for in_file in inputs:
-		pep_file = make_output_path(output_spec, in_file)
-		os.makedirs(os.path.dirname(pep_file), exist_ok=True)
-		if not os.path.exists(pep_file):
-			logger.info("Translating CDS file to PEP file")
-			translate_file(logger, in_file, pep_file, genetic_code, internal_stop_to_x=internal_stop_to_x)
-
-	# code to do BUSCO based QC
 	if qc == 'yes':
-		busco_dir_final = os.path.join(outdir, 'BUSCO_QC')
-		if not os.path.exists(busco_dir_final):
-			os.makedirs(busco_dir_final)
 		busco_dir = os.path.join(outdir, 'BUSCO_DB')
 		if not os.path.exists(busco_dir):
 			os.makedirs(busco_dir)
 		host_cache_dir = os.path.join(os.path.dirname(busco_dir), "BUSCO_cache")
 		os.makedirs(host_cache_dir, exist_ok=True)
-		busco_cmd = detect_busco(busco_path)
-		if busco_cmd:
-			busco_qc_result = os.path.join(busco_dir_final, 'BUSCO_QC.tsv')
-			busco_db_dir = os.path.join(busco_dir, 'BUSCO_databases')
-			busco_path_generated = "NA"
-			container_workdir = busco_dir
-			container_cache_dir = host_cache_dir
-			if not os.path.exists(busco_qc_result):
-				logger.info("Attempting BUSCO QC of PEP file generated")
-				if busco_path == 'busco_docker':
-					container_db_dir = busco_db_dir
-					docker_image = f"ezlabgva/busco:{busco_version}_{container_version}"
-					# writing bash script for executing busco installed with docker
-					bash_script = f"""#!/bin/bash
-							# BUSCO Docker wrapper script with proper cleanup
-	
-							# Container name based on process ID and timestamp for uniqueness
-							CONTAINER_NAME="busco_$$_$(date +%s)_$(shuf -i 1000-9999 -n 1)"
-	
-							# Cleanup function
-							cleanup() {{
-								echo "Cleaning up Docker container: $CONTAINER_NAME" >&2
-								docker stop "$CONTAINER_NAME" 2>/dev/null || true
-								docker rm "$CONTAINER_NAME" 2>/dev/null || true
-								exit $1
-							}}
-	
-							# Set up signal handlers for proper cleanup
-							trap 'cleanup 130' INT    # Ctrl+C (SIGINT)
-							trap 'cleanup 143' TERM   # Termination (SIGTERM)
-							trap 'cleanup 1' EXIT     # Any exit
-							trap 'cleanup 1' ERR      # Any error
-	
-							# Check if Docker is available
-							if ! command -v docker &>/dev/null; then
-								echo "Error: Docker is not installed or not in PATH." >&2
-								exit 1
-							fi
-	
-							# Run BUSCO in Docker with automatic cleanup
-							docker run --rm \\
-								--name "$CONTAINER_NAME" \\
-								-u $(id -u) \\
-								-v "{host_path}:{container_path}" \\
-								-v "{host_cache_dir}:{container_cache_dir}" \\
-								-v "{busco_db_dir}:{container_db_dir}" \\
-								-e XDG_CONFIG_HOME="{container_cache_dir}" \\
-								-w "{container_workdir}" \\
-								{docker_image} \\
-								busco "$@"
-	
-							# Capture exit code and exit cleanly
-							EXIT_CODE=$?
-							exit $EXIT_CODE
-							"""
-					output_filename = os.path.join(busco_dir_final, "run_busco_docker.sh")
-					with open(output_filename, "w") as f:
-						f.write(bash_script)
-					os.chmod(output_filename, 0o755)
-					busco_path_generated = output_filename
-					# Pre-download for Docker
-					if not os.path.isdir(busco_db_dir):
-						pre_download_databases(logger, busco_path_generated, org_type, busco_dir, busco_db_dir)
-				else:
-					if not os.path.isdir(busco_db_dir):
-						# Pre-download for normal BUSCO
-						pre_download_databases(logger, busco_path, org_type, busco_dir, busco_db_dir)
-				logger.info("starting BUSCO run")
-				ploidy_results = []
-				busco_single_copy_lists = {}
-				if busco_path != 'busco_docker':
-					busco_result = run_busco(logger, orgname, str(pep_file), busco_path, busco_dir, busco_dir_final,str(cores), org_type, host_cache_dir,busco_db_dir, buscolineage)
-				elif busco_path == 'busco_docker':
-					busco_result = run_busco(logger, orgname, str(pep_file), busco_path_generated, busco_dir,busco_dir_final, str(cores), org_type,container_cache_dir, container_db_dir, buscolineage)
-				with open(busco_qc_result, 'w') as out:
-					out.write('Organism' + '\t' + 'Pseudo ploidy number' + '\t' + 'BUSCO Completeness (%)' + '\t' + 'BUSCO Duplication (%)' + '\n')
-					out.write(str(busco_result) + '\n')
-				logger.info(f"BUSCO QC check completed.")
-		else:
-			logger.warning("BUSCO not found. No QC check possible.")
+		busco_db_dir = os.path.join(busco_dir, 'BUSCO_databases')
 
-	#code block to record completed accessions to tackle internet and network disruption interruptions
-	completed_accessions = set()
-	prefetch_completed_accessions_file = os.path.join(tmpdir,'prefetch_completed_accession.txt')
-	fasterqpigz_completed_accessions_file = os.path.join(tmpdir,'fasterq-dump_pigz_completed_accession.txt')
-	kallisto_completed_accessions_file = os.path.join(tmpdir, 'kallisto_quant_completed_accessions.txt')
+	for folder in Path(results_out_folder).iterdir():
+		#code block to obtain PEP file from CDS file
+		ref = folder.name
+		input_spec = multi_ref_dic[ref]
+		output_spec = os.path.join(folder,f'{orgname}.pep.fasta')
+		internal_stop_to_x = ('--internal-stop-to-x' in arguments)
 
-	failed_accessions_file = os.path.join(outdir,'failed_accessions.txt')
-	kallistodir=os.path.join(tmpdir,'Kallisto_abundances')
-	if not os.path.exists(kallistodir):
-		os.makedirs(kallistodir)
+		# Standard code table (nuclear, 1)
+		genetic_code = {
+			'CTT':'L','ATG':'M','AAG':'K','AAA':'K','ATC':'I','AAC':'N','ATA':'I','AGG':'R',
+			'CCT':'P','ACT':'T','AGC':'S','ACA':'T','AGA':'R','CAT':'H','AAT':'N','ATT':'I',
+			'CTG':'L','CTA':'L','CTC':'L','CAC':'H','ACG':'T','CCG':'P','AGT':'S','CAG':'Q',
+			'CAA':'Q','CCC':'P','TAG':'*','TAT':'Y','GGT':'G','TGT':'C','CGA':'R','CCA':'P',
+			'TCT':'S','GAT':'D','CGG':'R','TTT':'F','TGC':'C','GGG':'G','TGA':'*','GGA':'G',
+			'TGG':'W','GGC':'G','TAC':'Y','GAG':'E','TCG':'S','TTA':'L','GAC':'D','TCC':'S',
+			'GAA':'E','TCA':'S','GCA':'A','GTA':'V','GCC':'A','GTC':'V','GCG':'A','GTG':'V',
+			'TTC':'F','GTT':'V','GCT':'A','ACC':'T','TTG':'L','CGT':'R','TAA':'*','CGC':'R'
+		}
 
-	prefetch_completed_accessions = set()
-	fasterqpigz_completed_accessions = set()
-	kallisto_completed_accessions = set()
+		inputs = gather_inputs(input_spec)
 
-	if os.path.exists(prefetch_completed_accessions_file):
-		with open (prefetch_completed_accessions_file, 'r') as f:
-			prefetch_completed_accessions = set(line.strip() for line in f)
+		# If multiple inputs but output_spec is a file path, abort to avoid overwriting
+		if len(inputs) > 1 and (not output_spec.endswith(os.sep) and not os.path.isdir(output_spec)):
+			sys.exit("[ERROR] For multiple input files, --out must be a directory or end with '/'.")
+		if output_spec.endswith(os.sep):
+			os.makedirs(output_spec, exist_ok=True)
 
-	if os.path.exists(fasterqpigz_completed_accessions_file):
-		with open (fasterqpigz_completed_accessions_file, 'r') as f:
-			fasterqpigz_completed_accessions = set(line.strip() for line in f)
-
-	if os.path.exists(kallisto_completed_accessions_file):
-		with open (kallisto_completed_accessions_file, 'r') as f:
-			kallisto_completed_accessions = set(line.strip() for line in f)
-
-
-	# Clear failed accessions file at start of each run
-	with open(failed_accessions_file, 'w') as f:
-		pass
-	sra_accessions = [acc for acc in load_IDs(todo_sras)]
-
-	# create kallisto index file
-	index_file = os.path.join(tmpdir, "index")
-	if not os.path.isfile(index_file):
-		logger.info("Starting Kallisto indexing")
-		cmd1 = " ".join([kallisto, "index", "--index=" + index_file, "--make-unique", cds_file])
-		p = subprocess.Popen(args=cmd1, shell=True, stdout=subprocess_log, stderr=subprocess_log)
-		p.communicate()
-
-	if RICH_AVAILABLE:
-		command = Live(build_dashboard(), refresh_per_second=2)
-	else:
-		from contextlib import nullcontext
-		command = nullcontext(None)
-
-	with command as live_display:
-		fk_thread = Thread(target=fasterqdump_kallisto_worker, args=(fasterqpigz_completed_accessions, kallisto_completed_accessions, index_file, sradir, readfile_status, logger, kallistodir, kallisto, cores,tmpdir, fasterq_dump, attempts, base_wait, failed_accessions_file,fasterqpigz_completed_accessions_file,kallisto_completed_accessions_file,subprocess_log))
-		fk_thread.start()
-
-		# keep active prefetch threads = batch dynamically
-		if prefetch_completed_accessions:
-			# Code block for resume/ restart for requeueing accessions
-			requeued_count = 0
-			accessions_needing_prefetch = []
-			for accession in sra_accessions:
-				if accession in kallisto_completed_accessions:
-					continue  # fully done already, nothing more to do
-				if accession in prefetch_completed_accessions:
-					kallisto_queue.put(accession)
-					requeued_count += 1
-				else:
-					accessions_needing_prefetch.append(accession)
-			logger.info(f"Resume: re-queued {requeued_count} accessions directly to kallisto stage.")
-		else:
-			# fresh run - nothing to filter for resuming with fasterq-dump and kallisto
-			accessions_needing_prefetch = sra_accessions
-
-		#only accessions that need a fresh prefetch go through the disk-gated loop
-		active_prefetch_threads = []
-		for accession in accessions_needing_prefetch:
-			while ((len([t for t in active_prefetch_threads if t.is_alive()]) >= batch_size) or (float(get_disk_usage_percent(sradir)) >= storage_threshold_percent)):
-				live_display.update(build_dashboard())
-				time.sleep(5)
-			# clean up finished threads
-			active_prefetch_threads = [t for t in active_prefetch_threads if t.is_alive()]
-			# start new prefetch thread for this accession
-			t = Thread(target=parallel_prefetch, args=(prefetch_completed_accessions, accession, attempts,sradir, prefetch_command, minimum_sra_file_size_threshold, base_wait, failed_accessions_file, prefetch_completed_accessions_file, logger,subprocess_log))
-			t.start()
-			active_prefetch_threads.append(t)
-			live_display.update(build_dashboard())  # refresh after starting new thread
-
-		# wait for all remaining prefetch threads to finish
-		for t in active_prefetch_threads:
-			t.join()
-			live_display.update(build_dashboard())  # refresh as each prefetch finishes
-
-		# signal fasterq+kallisto consumer that no more accessions are coming
-		kallisto_queue.put(barrier)
-		fk_thread.join()  # wait for last Kallisto to finish before merge step
-		live_display.update(build_dashboard())  # final refresh
-
-	subprocess_log.close()#close the subprocess_log file handle since there are no subprocesses to be logged after this step
-
-	# Merge the TPM, Counts of SRA samples into a single TPM, Counts file respectively
-	tpmfile = os.path.join(kallistofinaldir, f'{orgname}_unfiltered.tpms.tsv')
-	countsfile = os.path.join(kallistofinaldir, f'{orgname}_unfiltered.counts.tsv')
-
-	if not (os.path.exists(tpmfile) and os.path.exists(countsfile)):
-		logger.info(f'Merging TPM files and count files of all the samples')
-		if RICH_AVAILABLE:
-			sys.stdout.write(f'Merging TPM files and count files of all the samples\n')
-			sys.stdout.flush()
-		counttables = glob.glob(os.path.join(kallistodir, "*.tsv"))
-		count_data = {}
-		tpm_data = {}
-		transcript2gene = {}
-		for filename in counttables:
-			ID = filename.split('/')[-1].split('.')[0]
-			if "_" in ID:  # only take ID if datetime string was included in file name
-				ID = ID.split("_")[-1]
-			counts, tpms = load_counttable(filename)
-			# TPM are available and could be processed in the same way
-			gene_counts = map_counts_to_genes(logger, transcript2gene, counts)
-			gene_tpms = map_counts_to_genes(logger, transcript2gene, tpms)
-			count_data.update({ID: gene_counts})
-			tpm_data.update({ID: gene_tpms})
-		if countsfile:
-			generate_output_file(countsfile, count_data)
-		if tpmfile:
-			generate_output_file(tpmfile, tpm_data)
-
-	#code block to filter RNA-seq samples
-	filtered_tpm_file = os.path.join(outdir, f"{orgname}.tpms.tsv")
-	if not os.path.exists(filtered_tpm_file):
-		logger.info("Filtering the TPM expression file")
-		if RICH_AVAILABLE:
-			sys.stdout.write(f'Filtering the TPM expression file\n')
-			sys.stdout.flush()
-		# --- run analysis of all data in folder/file --- #
-		doc_file = os.path.join(tmpdir,f'{orgname}_qc.doc')
-		valid_samples = []
-		with open(doc_file, "w") as out:
-			out.write("SampleName\tPercentageOfTop100\tPercentageOfTop500\tPercentageOfTop1000\n")
-			TPM_data, genes = load_all_TPMs(tpmfile)
-			count_data, genes = load_all_TPMs(countsfile)
-			for key in sorted(list(TPM_data.keys())):
-				new_line = [key]
-				selection = sorted(TPM_data[key])
-				counts = sum(count_data[key])  # calculate counts per library
-				if counts >= min_counts:  # check for sufficient library size
-					try:  # check for ID presence on black list
-						black_list[key]
-						new_line.append("ID on black list")
-						out.write("\t".join(list(map(str, new_line))) + "\n")
-					except KeyError:
-						try:
-							val = 100.0 * sum(selection[-100:]) / sum(selection)
-						except ZeroDivisionError:
-							val = 0
-						new_line.append(val)
-						if min_cutoff < val < max_cutoff:
-							valid_samples.append(key)
-						if len(selection) > 500 and val > 0:
-							new_line.append(100.0 * sum(selection[-500:]) / sum(selection))
-						else:
-							new_line.append("n/a")
-						if len(selection) > 1000 and val > 0:
-							new_line.append(100.0 * sum(selection[-1000:]) / sum(selection))
-						else:
-							new_line.append("n/a")
-						out.write("\t".join(list(map(str, new_line))) + "\n")
-				else:
-					new_line.append("insufficient counts: " + str(counts))
-					out.write("\t".join(list(map(str, new_line))) + "\n")
-
-		logger.info("number of valid sample: " + str(len(valid_samples)))
-		logger.info("number of invalid sample: " + str(len(TPM_data.keys()) - len(valid_samples)))
-		if RICH_AVAILABLE:
-			sys.stdout.write(f"number of valid sample: {str(len(valid_samples))}\n")
-			sys.stdout.flush()
-			sys.stdout.write(f"number of invalid sample: {str(len(TPM_data.keys()) - len(valid_samples))}\n")
-			sys.stdout.flush()
-
-		# --- generate output file --- #
-		if len(valid_samples) > 0:
-			with open(filtered_tpm_file, "w") as out:
-				out.write("gene\t" + "\t".join(valid_samples) + "\n")
-				for idx, gene in enumerate(genes):
-					new_line = [gene]
-					for sample in valid_samples:
-						new_line.append(TPM_data[sample][idx])
-					out.write("\t".join(list(map(str, new_line))) + "\n")
-		else:
-			logger.error("WARNING: no valid samples in data set!")
-			if RICH_AVAILABLE:
-				sys.stdout.write(f'WARNING: no valid samples in data set!\n')
-				sys.stdout.flush()
-		# --- generate figure --- #
-		fig_file = os.path.join(tmpdir, f'{orgname}_qc.pdf')
-		values = []
-		with open(doc_file, "r") as f:
-			f.readline()  # remove header
-			line = f.readline()
-			while line:
-				parts = line.strip().split('\t')
-				try:
-					values.append(float(parts[1]))
-				except ValueError:
-					pass
-				line = f.readline()
-
-		values = [x for x in values if str(x) != 'nan']
-
-		fig, ax = plt.subplots()
-
-		ax.hist(values, bins=100, color="green")
-		ax.set_xlabel("Percentage of expression on top100 genes")
-		ax.set_ylabel("Number of analyzed samples")
-
-		fig.savefig(fig_file)
-		if remove_isoforms == 'no':
-			logger.info(f'Xpression_collector pipeline completed successfully!!!')
-			if RICH_AVAILABLE:
-				sys.stdout.write(f'Xpression_collector pipeline completed successfully!!!\n')
-				sys.stdout.flush()
-
-	#optional removal of isoforms
-	isoform_reduced_cds_file = outdir + f"{orgname}.repr.cds.fasta"
-	repr_output_spec = os.path.join(outdir, f'{orgname}.repr.pep.fasta')
-	repr_tpm_file = os.path.join(outdir, f'{orgname}.repr.tpms.tsv')
-	if remove_isoforms == 'yes':
-		if os.path.exists(isoform_reduced_cds_file) and os.path.exists(repr_output_spec) and os.path.exists(repr_tpm_file):
-			pass
-		else:
-			logger.info("Removing alternative isoforms")
-			if RICH_AVAILABLE:
-				sys.stdout.write(f"Removing alternative isoforms\n")
-				sys.stdout.flush()
-			cds_dict = load_multiple_fasta_file(cds_file)
-			repr_ids = isoform_clean(gff_file, cds_dict, isoform_reduced_cds_file, child_attribute, child_parent_linker)
-
-			#code block to produce PEP file without isoforms
-			repr_input_spec = isoform_reduced_cds_file
-			internal_stop_to_x = ('--internal-stop-to-x' in arguments)
-
-			# Standard code table (nuclear, 1)
-			genetic_code = {
-				'CTT': 'L', 'ATG': 'M', 'AAG': 'K', 'AAA': 'K', 'ATC': 'I', 'AAC': 'N', 'ATA': 'I', 'AGG': 'R',
-				'CCT': 'P', 'ACT': 'T', 'AGC': 'S', 'ACA': 'T', 'AGA': 'R', 'CAT': 'H', 'AAT': 'N', 'ATT': 'I',
-				'CTG': 'L', 'CTA': 'L', 'CTC': 'L', 'CAC': 'H', 'ACG': 'T', 'CCG': 'P', 'AGT': 'S', 'CAG': 'Q',
-				'CAA': 'Q', 'CCC': 'P', 'TAG': '*', 'TAT': 'Y', 'GGT': 'G', 'TGT': 'C', 'CGA': 'R', 'CCA': 'P',
-				'TCT': 'S', 'GAT': 'D', 'CGG': 'R', 'TTT': 'F', 'TGC': 'C', 'GGG': 'G', 'TGA': '*', 'GGA': 'G',
-				'TGG': 'W', 'GGC': 'G', 'TAC': 'Y', 'GAG': 'E', 'TCG': 'S', 'TTA': 'L', 'GAC': 'D', 'TCC': 'S',
-				'GAA': 'E', 'TCA': 'S', 'GCA': 'A', 'GTA': 'V', 'GCC': 'A', 'GTC': 'V', 'GCG': 'A', 'GTG': 'V',
-				'TTC': 'F', 'GTT': 'V', 'GCT': 'A', 'ACC': 'T', 'TTG': 'L', 'CGT': 'R', 'TAA': '*', 'CGC': 'R'
-			}
-
-			inputs = gather_inputs(repr_input_spec)
-
-			# If multiple inputs but output_spec is a file path, abort to avoid overwriting
-			if len(inputs) > 1 and (not repr_output_spec.endswith(os.sep) and not os.path.isdir(repr_output_spec)):
-				sys.exit("[ERROR] For multiple input files, --out must be a directory or end with '/'.")
-			if repr_output_spec.endswith(os.sep):
-				os.makedirs(repr_output_spec, exist_ok=True)
-
-			for in_file in inputs:
-				pep_file = make_output_path(repr_output_spec, in_file)
-				os.makedirs(os.path.dirname(pep_file), exist_ok=True)
+		for in_file in inputs:
+			pep_file = make_output_path(output_spec, in_file)
+			os.makedirs(os.path.dirname(pep_file), exist_ok=True)
+			if not os.path.exists(pep_file):
+				logger.info("Translating CDS file to PEP file")
 				translate_file(logger, in_file, pep_file, genetic_code, internal_stop_to_x=internal_stop_to_x)
 
-			#code block to produce TPM file without alternative isoforms
-			repr_tpm_filtered = keep_primary_transcript_exp(repr_ids, repr_tpm_file, isoform_reduced_cds_file, filtered_tpm_file)
-			logger.info(f'Xpression_collector pipeline completed successfully!!!')
+		# code to do BUSCO based QC
+		if qc == 'yes':
+			busco_dir_final = os.path.join(folder, 'BUSCO_QC')
+			if not os.path.exists(busco_dir_final):
+				os.makedirs(busco_dir_final)
+			busco_cmd = detect_busco(busco_path)
+			if busco_cmd:
+				busco_qc_result = os.path.join(busco_dir_final, 'BUSCO_QC.tsv')
+				busco_path_generated = "NA"
+				container_workdir = busco_dir
+				container_cache_dir = host_cache_dir
+				if not os.path.exists(busco_qc_result):
+					logger.info("Attempting BUSCO QC of PEP file generated")
+					if busco_path == 'busco_docker':
+						container_db_dir = busco_db_dir
+						docker_image = f"ezlabgva/busco:{busco_version}_{container_version}"
+						# writing bash script for executing busco installed with docker
+						bash_script = f"""#!/bin/bash
+								# BUSCO Docker wrapper script with proper cleanup
+		
+								# Container name based on process ID and timestamp for uniqueness
+								CONTAINER_NAME="busco_$$_$(date +%s)_$(shuf -i 1000-9999 -n 1)"
+		
+								# Cleanup function
+								cleanup() {{
+									echo "Cleaning up Docker container: $CONTAINER_NAME" >&2
+									docker stop "$CONTAINER_NAME" 2>/dev/null || true
+									docker rm "$CONTAINER_NAME" 2>/dev/null || true
+									exit $1
+								}}
+		
+								# Set up signal handlers for proper cleanup
+								trap 'cleanup 130' INT    # Ctrl+C (SIGINT)
+								trap 'cleanup 143' TERM   # Termination (SIGTERM)
+								trap 'cleanup 1' EXIT     # Any exit
+								trap 'cleanup 1' ERR      # Any error
+		
+								# Check if Docker is available
+								if ! command -v docker &>/dev/null; then
+									echo "Error: Docker is not installed or not in PATH." >&2
+									exit 1
+								fi
+		
+								# Run BUSCO in Docker with automatic cleanup
+								docker run --rm \\
+									--name "$CONTAINER_NAME" \\
+									-u $(id -u) \\
+									-v "{host_path}:{container_path}" \\
+									-v "{host_cache_dir}:{container_cache_dir}" \\
+									-v "{busco_db_dir}:{container_db_dir}" \\
+									-e XDG_CONFIG_HOME="{container_cache_dir}" \\
+									-w "{container_workdir}" \\
+									{docker_image} \\
+									busco "$@"
+		
+								# Capture exit code and exit cleanly
+								EXIT_CODE=$?
+								exit $EXIT_CODE
+								"""
+						output_filename = os.path.join(busco_dir_final, "run_busco_docker.sh")
+						with open(output_filename, "w") as f:
+							f.write(bash_script)
+						os.chmod(output_filename, 0o755)
+						busco_path_generated = output_filename
+						# Pre-download for Docker
+						if not os.path.isdir(busco_db_dir):
+							pre_download_databases(logger, busco_path_generated, org_type, busco_dir, busco_db_dir)
+					else:
+						if not os.path.isdir(busco_db_dir):
+							# Pre-download for normal BUSCO
+							pre_download_databases(logger, busco_path, org_type, busco_dir, busco_db_dir)
+					logger.info("starting BUSCO run")
+					ploidy_results = []
+					busco_single_copy_lists = {}
+					if busco_path != 'busco_docker':
+						busco_result = run_busco(ref, logger, orgname, str(pep_file), busco_path, busco_dir, busco_dir_final,str(cores), org_type, host_cache_dir,busco_db_dir, buscolineage)
+					elif busco_path == 'busco_docker':
+						busco_result = run_busco(ref, logger, orgname, str(pep_file), busco_path_generated, busco_dir,busco_dir_final, str(cores), org_type,container_cache_dir, container_db_dir, buscolineage)
+					with open(busco_qc_result, 'w') as out:
+						out.write('Organism' + '\t' + 'Pseudo ploidy number' + '\t' + 'BUSCO Completeness (%)' + '\t' + 'BUSCO Duplication (%)' + '\n')
+						out.write(str(busco_result) + '\n')
+					logger.info(f"BUSCO QC check completed.")
+			else:
+				logger.warning("BUSCO not found. No QC check possible.")
+	if standalone_merge == 'no':
+		if fetch == 'kingfisher':
+			cpus = cores // batch_size  # floor division to avoid float
+		#code block to record completed accessions to tackle internet and network disruption interruptions
+		completed_accessions = set()
+		prefetch_completed_accessions_file = os.path.join(tmpdir,'prefetch_completed_accession.txt')
+		fasterqpigz_completed_accessions_file = os.path.join(tmpdir,'fasterq-dump_pigz_completed_accession.txt')
+		failed_accessions_file = os.path.join(outdir,'failed_accessions.txt')
+		for folder in Path(results_tmp_folder).iterdir():
+			kallisto_completed_accessions_file = os.path.join(folder, 'kallisto_quant_completed_accessions.txt')
+			kallistodir=os.path.join(folder,'Kallisto_abundances')
+			if not os.path.exists(kallistodir):
+				os.makedirs(kallistodir)
+
+		prefetch_completed_accessions = set()
+		fasterqpigz_completed_accessions = set()
+		kallisto_completed_accessions = set()
+
+		if os.path.exists(prefetch_completed_accessions_file):
+			with open (prefetch_completed_accessions_file, 'r') as f:
+				prefetch_completed_accessions = set(line.strip() for line in f)
+
+		if os.path.exists(fasterqpigz_completed_accessions_file):
+			with open (fasterqpigz_completed_accessions_file, 'r') as f:
+				fasterqpigz_completed_accessions = set(line.strip() for line in f)
+		kallisto_completion_tracker = {}
+		for folder in Path(results_tmp_folder).iterdir():
+			ref = folder.name
+			kallisto_completed_accessions_file = os.path.join(folder,'kallisto_quant_completed_accessions.txt')
+			if os.path.exists(kallisto_completed_accessions_file):
+				with open (kallisto_completed_accessions_file, 'r') as f:
+					kallisto_completed_accessions = set(line.strip() for line in f)
+				kallisto_completion_tracker[ref] = kallisto_completed_accessions
+			else:
+				kallisto_completion_tracker[ref] = set()
+
+
+		# Clear failed accessions file at start of each run
+		with open(failed_accessions_file, 'w') as f:
+			pass
+		sra_accessions = [acc for acc in load_IDs(todo_sras)]
+
+		# create kallisto index file per reference
+		for folder in Path(results_tmp_folder).iterdir():
+			ref = folder.name
+			reference_cds = multi_ref_dic[ref]
+			index_file = os.path.join(folder, "index")
+			if not os.path.isfile(index_file):
+				logger.info("Starting Kallisto indexing")
+				cmd1 = " ".join([kallisto, "index", "--index=" + index_file, "--make-unique", reference_cds])
+				p = subprocess.Popen(args=cmd1, shell=True, stdout=subprocess_log, stderr=subprocess_log)
+				p.communicate()
+
+		if RICH_AVAILABLE:
+			command = Live(build_dashboard(), refresh_per_second=2)
+		else:
+			from contextlib import nullcontext
+			command = nullcontext(None)
+
+		with command as live_display:
+			fk_thread = Thread(target=fasterqdump_kallisto_worker, args=(fasterqpigz_completed_accessions, kallisto_completion_tracker, results_tmp_folder, sradir, readfile_status, logger, kallisto, cores,tmpdir, fasterq_dump, attempts, base_wait, failed_accessions_file,fasterqpigz_completed_accessions_file,subprocess_log))
+			fk_thread.start()
+
+			# keep active prefetch threads = batch dynamically
+			if prefetch_completed_accessions:
+				# Code block for resume/ restart for requeueing accessions
+				requeued_count = 0
+				accessions_needing_prefetch = []
+				for accession in sra_accessions:
+					fully_done = all(accession in kallisto_completion_tracker[ref] for ref in kallisto_completion_tracker)
+					if fully_done:
+						update_status(accession, "completed")
+						continue
+					if accession in prefetch_completed_accessions:
+						kallisto_queue.put(accession)
+						update_status(accession, "prefetch done; queued for next steps") #to make accessions immediately visible in dashboard after restart or resume
+						requeued_count += 1
+					else:
+						accessions_needing_prefetch.append(accession)
+				logger.info(f"Resume: re-queued {requeued_count} accessions directly to kallisto stage.")
+				if RICH_AVAILABLE:
+					sys.stdout.write(f"Resume: re-queued {requeued_count} accessions directly to kallisto stage.\n")
+					sys.stdout.flush()
+			else:
+				# fresh run - nothing to filter for resuming with fasterq-dump and kallisto
+				accessions_needing_prefetch = sra_accessions
+
+			#only accessions that need a fresh prefetch go through the disk-gated loop
+			active_prefetch_threads = []
+			for accession in accessions_needing_prefetch:
+				while ((len([t for t in active_prefetch_threads if t.is_alive()]) >= batch_size) or (float(get_disk_usage_percent(sradir)) >= storage_threshold_percent)):
+					live_display.update(build_dashboard())
+					time.sleep(5)
+				# clean up finished threads
+				active_prefetch_threads = [t for t in active_prefetch_threads if t.is_alive()]
+				# start new prefetch thread for this accession
+				if fetch == 'sratoolkit':
+					t = Thread(target=parallel_prefetch, args=(prefetch_completed_accessions, accession, attempts,sradir, prefetch_command, minimum_sra_file_size_threshold, base_wait, failed_accessions_file, prefetch_completed_accessions_file, logger,subprocess_log))
+				elif fetch == 'kingfisher':
+					t = Thread(target = kingfisher_ena_fetch, args=(fetch_fallback, prefetch_completed_accessions, fasterqpigz_completed_accessions, kingfisher, accession, cpus, attempts, sradir, prefetch_command,minimum_sra_file_size_threshold, base_wait, failed_accessions_file, prefetch_completed_accessions_file, fasterqpigz_completed_accessions_file, logger, subprocess_log))
+				t.start()
+				active_prefetch_threads.append(t)
+				live_display.update(build_dashboard())  # refresh after starting new thread
+
+			# wait for all remaining prefetch threads to finish
+			for t in active_prefetch_threads:
+				t.join()
+				live_display.update(build_dashboard())  # refresh as each prefetch finishes
+
+			# signal fasterq+kallisto consumer that no more accessions are coming
+			kallisto_queue.put(barrier)
+
+			# keep display alive while fk_thread processes requeued accessions
+			while fk_thread.is_alive():
+				live_display.update(build_dashboard())
+				time.sleep(5)
+
+			fk_thread.join()  # wait for last Kallisto to finish before merge step
+			live_display.update(build_dashboard())  # final refresh
+
+		subprocess_log.close()#close the subprocess_log file handle since there are no subprocesses to be logged after this step
+
+
+	# Merge the TPM, Counts of SRA samples into a single TPM, Counts file respectively
+	ref_main_folders = [item for item in Path(results_out_folder).iterdir() if item.is_dir()]
+	ref_tmp_folders = [item for item in Path(results_tmp_folder).iterdir() if item.is_dir()]
+	for ref in multi_ref_dic:
+		folder = next(directory for directory in ref_main_folders if directory.name == ref)
+		kallistofinaldir = os.path.join(folder, 'Kallisto_run_final')
+		if not os.path.exists(kallistofinaldir):
+			os.makedirs(kallistofinaldir)
+		folder_tmp = next(directory for directory in ref_tmp_folders if directory.name == ref)
+		kallistodir = os.path.join(folder_tmp, 'Kallisto_abundances')
+
+		tpmfile = os.path.join(kallistofinaldir, f'{orgname}_unfiltered.tpms.tsv')
+		countsfile = os.path.join(kallistofinaldir, f'{orgname}_unfiltered.counts.tsv')
+
+		temp_tpms_folder = os.path.join(folder_tmp,'Temp_TPMS')
+		if not os.path.exists(temp_tpms_folder):
+			os.mkdir(temp_tpms_folder)
+		temp_counts_folder = os.path.join(folder_tmp,'Temp_Counts')
+		if not os.path.exists(temp_counts_folder):
+			os.mkdir(temp_counts_folder)
+
+		if not (os.path.exists(tpmfile) and os.path.exists(countsfile)):
+			logger.info(f'Merging TPM files and count files of all the samples of {ref}')
 			if RICH_AVAILABLE:
-				sys.stdout.write(f"Xpression_collector pipeline completed successfully!!!\n")
+				sys.stdout.write(f'Merging TPM files and count files of all the samples of {ref}\n')
+				sys.stdout.flush()
+			counttables = glob.glob(os.path.join(kallistodir, "*.tsv"))
+			count_data = {}
+			tpm_data = {}
+			transcript2gene = {}
+			for filename in counttables:
+				ID = filename.split('/')[-1].split('.')[0]
+				if "_" in ID:  # only take ID if datetime string was included in file name
+					ID = ID.split("_")[-1]
+				counts, tpms = load_counttable(filename)
+				sample_counts_file = os.path.join(temp_counts_folder, f'{ID}.counts.tsv')
+				sample_tpms_file = os.path.join(temp_tpms_folder, f'{ID}.tpms.tsv')
+
+				with open(sample_counts_file, "w") as out:
+					out.write("\t".join(['gene', ID]) + '\n')
+					out.write('\n'.join(f"{gene}\t{value}" for gene, value in counts.items()))
+					out.write('\n')
+
+				with open(sample_tpms_file, "w") as out:
+					out.write("\t".join(['gene', ID]) + '\n')
+					out.write('\n'.join(f"{gene}\t{value}" for gene, value in tpms.items()))
+					out.write('\n')
+
+			merge_samplewise_tpms_counts_files(temp_counts_folder, countsfile)
+			merge_samplewise_tpms_counts_files(temp_tpms_folder, tpmfile)
+
+		#code block to filter RNA-seq samples
+		filtered_tpm_file = os.path.join(folder, f"{orgname}.tpms.tsv")
+		if not os.path.exists(filtered_tpm_file):
+			logger.info(f"Filtering the TPM expression file of {ref}")
+			if RICH_AVAILABLE:
+				sys.stdout.write(f'Filtering the TPM expression file of {ref}\n')
+				sys.stdout.flush()
+			# --- run analysis of all data in folder/file --- #
+			doc_file = os.path.join(folder_tmp,f'{orgname}_qc.doc')
+			valid_samples = []
+			with open(doc_file, "w") as out:
+				out.write("SampleName\tPercentageOfTop100\tPercentageOfTop500\tPercentageOfTop1000\n")
+				TPM_data, genes = load_all_TPMs(tpmfile)
+				count_data, genes = load_all_TPMs(countsfile)
+				for key in sorted(list(TPM_data.keys())):
+					new_line = [key]
+					selection = sorted(TPM_data[key])
+					counts = sum(count_data[key])  # calculate counts per library
+					if counts >= min_counts:  # check for sufficient library size
+						try:  # check for ID presence on black list
+							black_list[key]
+							new_line.append("ID on black list")
+							out.write("\t".join(list(map(str, new_line))) + "\n")
+						except KeyError:
+							try:
+								val = 100.0 * sum(selection[-100:]) / sum(selection)
+							except ZeroDivisionError:
+								val = 0
+							new_line.append(val)
+							if min_cutoff < val < max_cutoff:
+								valid_samples.append(key)
+							if len(selection) > 500 and val > 0:
+								new_line.append(100.0 * sum(selection[-500:]) / sum(selection))
+							else:
+								new_line.append("n/a")
+							if len(selection) > 1000 and val > 0:
+								new_line.append(100.0 * sum(selection[-1000:]) / sum(selection))
+							else:
+								new_line.append("n/a")
+							out.write("\t".join(list(map(str, new_line))) + "\n")
+					else:
+						new_line.append("insufficient counts: " + str(counts))
+						out.write("\t".join(list(map(str, new_line))) + "\n")
+
+			logger.info("number of valid sample of " + ref + " : " + str(len(valid_samples)))
+			logger.info("number of invalid sample of " + ref + " : " + str(len(TPM_data.keys()) - len(valid_samples)))
+			if RICH_AVAILABLE:
+				sys.stdout.write(f"number of valid sample of {ref}: {str(len(valid_samples))}\n")
+				sys.stdout.flush()
+				sys.stdout.write(f"number of invalid sample of {ref}: {str(len(TPM_data.keys()) - len(valid_samples))}\n")
 				sys.stdout.flush()
 
-	# code block to merge filtered TPM file produced in this run with already existing filtered TPM files
-	try:
-		timestr = time.strftime("%Y_%m_%d_")
-		merged_filtered_tpm_file = os.path.join(outdir, f'{timestr}_{orgname}_merged.tpms.tsv')
-		merged_filtered_repr_tpm_file = os.path.join(outdir, f'{timestr}_{orgname}_merged.repr.tpms.tsv')
-	except ModuleNotFoundError:
-		merged_filtered_tpm_file = os.path.join(outdir, f'{orgname}_merged.tpms.tsv')
-		merged_filtered_repr_tpm_file = os.path.join(outdir, f'{orgname}_merged.repr.tpms.tsv')
+			# --- generate output file --- #
+			if len(valid_samples) > 0:
+				with open(filtered_tpm_file, "w") as out:
+					out.write("gene\t" + "\t".join(valid_samples) + "\n")
+					for idx, gene in enumerate(genes):
+						new_line = [gene]
+						for sample in valid_samples:
+							new_line.append(TPM_data[sample][idx])
+						out.write("\t".join(list(map(str, new_line))) + "\n")
+			else:
+				logger.error(f"WARNING: no valid samples in data set of {ref}!")
+				if RICH_AVAILABLE:
+					sys.stdout.write(f'WARNING: no valid samples in data set of {ref}!\n')
+					sys.stdout.flush()
+			# --- generate figure --- #
+			fig_file = os.path.join(folder_tmp, f'{orgname}_qc.pdf')
+			values = []
+			with open(doc_file, "r") as f:
+				f.readline()  # remove header
+				line = f.readline()
+				while line:
+					parts = line.strip().split('\t')
+					try:
+						values.append(float(parts[1]))
+					except ValueError:
+						pass
+					line = f.readline()
 
-	if merge_filtered_tpm:
+			values = [x for x in values if str(x) != 'nan']
+
+			fig, ax = plt.subplots()
+
+			ax.hist(values, bins=100, color="green")
+			ax.set_xlabel("Percentage of expression on top100 genes")
+			ax.set_ylabel("Number of analyzed samples")
+
+			fig.savefig(fig_file)
+			if remove_isoforms == 'no':
+				logger.info(f'Xpression_collector pipeline completed successfully for {ref}!!!')
+				if RICH_AVAILABLE:
+					sys.stdout.write(f'Xpression_collector pipeline completed successfully for {ref}!!!\n')
+					sys.stdout.flush()
+
+		#optional removal of isoforms
+		isoform_reduced_cds_file = os.path.join(folder, f"{orgname}.repr.cds.fasta")
+		repr_output_spec = os.path.join(folder, f'{orgname}.repr.pep.fasta')
+		repr_tpm_file = os.path.join(folder, f'{orgname}.repr.tpms.tsv')
+		if remove_isoforms == 'yes':
+			if os.path.exists(isoform_reduced_cds_file) and os.path.exists(repr_output_spec) and os.path.exists(repr_tpm_file):
+				pass
+			else:
+				logger.info("Removing alternative isoforms")
+				if RICH_AVAILABLE:
+					sys.stdout.write(f"Removing alternative isoforms\n")
+					sys.stdout.flush()
+				cds_dict = load_multiple_fasta_file(multi_ref_dic[ref])
+				gff_file = multi_ref_gff_dic[ref]
+				if ref in gff_config_dic.keys():
+					child_attribute = gff_config_dic[ref]['child_attribute']
+					child_parent_linker = gff_config_dic[ref]['child_parent_linker']
+				else:
+					child_attribute = gff_config_dic['default']['child_attribute']
+					child_parent_linker = gff_config_dic['default']['child_parent_linker']
+				repr_ids = isoform_clean(gff_file, cds_dict, isoform_reduced_cds_file, child_attribute, child_parent_linker)
+
+				#code block to produce PEP file without isoforms
+				repr_input_spec = isoform_reduced_cds_file
+				internal_stop_to_x = ('--internal-stop-to-x' in arguments)
+
+				# Standard code table (nuclear, 1)
+				genetic_code = {
+					'CTT': 'L', 'ATG': 'M', 'AAG': 'K', 'AAA': 'K', 'ATC': 'I', 'AAC': 'N', 'ATA': 'I', 'AGG': 'R',
+					'CCT': 'P', 'ACT': 'T', 'AGC': 'S', 'ACA': 'T', 'AGA': 'R', 'CAT': 'H', 'AAT': 'N', 'ATT': 'I',
+					'CTG': 'L', 'CTA': 'L', 'CTC': 'L', 'CAC': 'H', 'ACG': 'T', 'CCG': 'P', 'AGT': 'S', 'CAG': 'Q',
+					'CAA': 'Q', 'CCC': 'P', 'TAG': '*', 'TAT': 'Y', 'GGT': 'G', 'TGT': 'C', 'CGA': 'R', 'CCA': 'P',
+					'TCT': 'S', 'GAT': 'D', 'CGG': 'R', 'TTT': 'F', 'TGC': 'C', 'GGG': 'G', 'TGA': '*', 'GGA': 'G',
+					'TGG': 'W', 'GGC': 'G', 'TAC': 'Y', 'GAG': 'E', 'TCG': 'S', 'TTA': 'L', 'GAC': 'D', 'TCC': 'S',
+					'GAA': 'E', 'TCA': 'S', 'GCA': 'A', 'GTA': 'V', 'GCC': 'A', 'GTC': 'V', 'GCG': 'A', 'GTG': 'V',
+					'TTC': 'F', 'GTT': 'V', 'GCT': 'A', 'ACC': 'T', 'TTG': 'L', 'CGT': 'R', 'TAA': '*', 'CGC': 'R'
+				}
+
+				inputs = gather_inputs(repr_input_spec)
+
+				# If multiple inputs but output_spec is a file path, abort to avoid overwriting
+				if len(inputs) > 1 and (not repr_output_spec.endswith(os.sep) and not os.path.isdir(repr_output_spec)):
+					sys.exit("[ERROR] For multiple input files, --out must be a directory or end with '/'.")
+				if repr_output_spec.endswith(os.sep):
+					os.makedirs(repr_output_spec, exist_ok=True)
+
+				for in_file in inputs:
+					pep_file = make_output_path(repr_output_spec, in_file)
+					os.makedirs(os.path.dirname(pep_file), exist_ok=True)
+					translate_file(logger, in_file, pep_file, genetic_code, internal_stop_to_x=internal_stop_to_x)
+
+				#code block to produce TPM file without alternative isoforms
+				repr_tpm_filtered = keep_primary_transcript_exp(repr_ids, repr_tpm_file, isoform_reduced_cds_file, filtered_tpm_file)
+				logger.info(f'Xpression_collector pipeline completed successfully for {ref}!!!')
+				if RICH_AVAILABLE:
+					sys.stdout.write(f"Xpression_collector pipeline completed successfully for {ref}!!!\n")
+					sys.stdout.flush()
+
+		# code block to merge filtered TPM file produced in this run with already existing filtered TPM files
 		try:
-			merged_df = merge_expression_tsvs(filtered_tpm_file, merge_filtered_tpm)
-			merged_df.to_csv(merged_filtered_tpm_file, sep='\t', index=False)
-			logger.info(f"Merge of currently produced TPM file and user supplied TPM file successful: {merged_df.shape[0]} genes x {merged_df.shape[1]} columns")
+			timestr = time.strftime("%Y_%m_%d")
+			merged_filtered_tpm_file = os.path.join(folder, f'{timestr}_{orgname}_merged.tpms.tsv')
+			merged_filtered_repr_tpm_file = os.path.join(folder, f'{timestr}_{orgname}_merged.repr.tpms.tsv')
+		except ModuleNotFoundError:
+			merged_filtered_tpm_file = os.path.join(folder, f'{orgname}_merged.tpms.tsv')
+			merged_filtered_repr_tpm_file = os.path.join(folder, f'{orgname}_merged.repr.tpms.tsv')
+
+		if merge_filtered_tpm:
+			logger.info(f"Starting to merge TPM file(s)")
 			if RICH_AVAILABLE:
-				sys.stdout.write(f"Merge of currently produced TPM file and user supplied TPM file successful: {merged_df.shape[0]} genes x {merged_df.shape[1]} columns")
+				sys.stdout.write(f"Starting to merge TPM file(s)\n")
 				sys.stdout.flush()
-			logger.info(f'Xpression_collector pipeline completed successfully!!!')
+			try:
+				if os.path.exists(filtered_tpm_file):
+					merged_df = merge_expression_tsvs(filtered_tpm_file, merge_filtered_tpm)
+					merged_df.to_csv(merged_filtered_tpm_file, sep='\t', index=False)
+					logger.info(f"Merge of currently produced TPM file and user supplied TPM file(s) successful: {merged_df.shape[0]} genes x {merged_df.shape[1]} samples")
+					if RICH_AVAILABLE:
+						sys.stdout.write(f"Merge of currently produced TPM file and user supplied TPM file successful: {merged_df.shape[0]} genes x {merged_df.shape[1]} samples\n")
+						sys.stdout.flush()
+				else:
+					if len(merge_filtered_tpm) > 1:
+						merged_df = merge_expression_tsvs(merge_filtered_tpm[0],merge_filtered_tpm[1:])
+						merged_df.to_csv(merged_filtered_tpm_file, sep='\t', index=False)
+						logger.warning(f"{ref}: No valid expression file produced in this run for merge. Merged the other expression files input for merge.")
+						if RICH_AVAILABLE:
+							sys.stdout.write(f"{ref}: No valid expression file produced in this run for merge. Merged the other expression files input for merge.\n")
+							sys.stdout.flush()
+						logger.info(f"{ref}: Merge of user supplied TPM file(s) successful: {merged_df.shape[0]} genes x {merged_df.shape[1]} samples")
+						if RICH_AVAILABLE:
+							sys.stdout.write(f"{ref}: Merge of user supplied TPM file(s) successful: {merged_df.shape[0]} genes x {merged_df.shape[1]} samples\n")
+							sys.stdout.flush()
+					else:
+						logger.error(f"{ref}: No valid expression file produced in this run for merge.")
+						if RICH_AVAILABLE:
+							sys.stdout.write(f"{ref}: No valid expression file produced in this run for merge.\n")
+							sys.stdout.flush()
+				if merge_filtered_repr_tpm:
+					pass
+				else:
+					logger.info(f'Xpression_collector pipeline completed successfully for {ref}!!!')
+					if RICH_AVAILABLE:
+						sys.stdout.write(f"Xpression_collector pipeline completed successfully for {ref}!!!\n")
+						sys.stdout.flush()
+			except ValueError as e:
+				logger.error(f"Aborting merge for {ref}:\n{e}")
+				if RICH_AVAILABLE:
+					sys.stdout.write(f"Aborting merge for {ref}:\n{e}")
+					sys.stdout.flush()
+		if merge_filtered_repr_tpm and remove_isoforms == 'yes':
+			logger.info(f"Starting to merge representative TPM file(s)")
 			if RICH_AVAILABLE:
-				sys.stdout.write(f"Xpression_collector pipeline completed successfully!!!\n")
+				sys.stdout.write(f"Starting to merge representative TPM file(s)\n")
 				sys.stdout.flush()
-		except ValueError as e:
-			logger.error(f"Aborting merge:\n{e}")
-			if RICH_AVAILABLE:
-				sys.stdout.write(f"Aborting merge:\n{e}")
-				sys.stdout.flush()
-	if merge_filtered_repr_tpm and remove_isoforms == 'yes':
-		try:
-			merged_df = merge_expression_tsvs(repr_tpm_filtered, merge_filtered_repr_tpm)
-			merged_df.to_csv(merged_filtered_repr_tpm_file, sep='\t', index=False)
-			logger.info(f"Merge of currently produced TPM file and user supplied TPM file successful: {merged_df.shape[0]} genes x {merged_df.shape[1]} columns")
-			if RICH_AVAILABLE:
-				sys.stdout.write(f"Merge of currently produced TPM file and user supplied TPM file successful: {merged_df.shape[0]} genes x {merged_df.shape[1]} columns\n")
-				sys.stdout.flush()
-			logger.info(f'Xpression_collector pipeline completed successfully!!!')
-			if RICH_AVAILABLE:
-				sys.stdout.write(f"Xpression_collector pipeline completed successfully!!!\n")
-				sys.stdout.flush()
-		except ValueError as e:
-			logger.error(f"Aborting merge:\n{e}")
-			if RICH_AVAILABLE:
-				sys.stdout.write(f"Aborting merge:\n{e}\n")
-				sys.stdout.flush()
+			try:
+				if os.path.exists(repr_tpm_file):#repr_tpm_file and repr_tpm_filtered refer to the same isoform removed TPM file
+					merged_df = merge_expression_tsvs(repr_tpm_file, merge_filtered_repr_tpm)
+					merged_df.to_csv(merged_filtered_repr_tpm_file, sep='\t', index=False)
+					logger.info(f"Merge of currently produced representative (alternative transcripts-free) TPM file and user supplied repr TPM file(s) successful for {ref}: {merged_df.shape[0]} genes x {merged_df.shape[1]} samples")
+					if RICH_AVAILABLE:
+						sys.stdout.write(f"Merge of currently produced representative (alternative transcripts-free) TPM file and user supplied repr TPM file(s) successful for {ref}: {merged_df.shape[0]} genes x {merged_df.shape[1]} samples\n")
+						sys.stdout.flush()
+				else:
+					if len(merge_filtered_repr_tpm) > 1:
+						merged_df = merge_expression_tsvs(merge_filtered_repr_tpm[0],merge_filtered_repr_tpm[1:])
+						merged_df.to_csv(merged_filtered_repr_tpm_file, sep='\t', index=False)
+						logger.warning(f"{ref}: No valid representative (alternative transcripts-free) expression file produced in this run for merge. Merged the other repr expression files input for merge.")
+						if RICH_AVAILABLE:
+							sys.stdout.write(f"{ref}: No valid representative (alternative transcripts-free) expression file produced in this run for merge. Merged the other repr expression files input for merge.\n")
+							sys.stdout.flush()
+						logger.info(f"{ref}: Merge of user supplied repr TPM file(s) successful: {merged_df.shape[0]} genes x {merged_df.shape[1]} samples")
+						if RICH_AVAILABLE:
+							sys.stdout.write(f"{ref}: Merge of user supplied repr TPM file successful: {merged_df.shape[0]} genes x {merged_df.shape[1]} samples\n")
+							sys.stdout.flush()
+					else:
+						logger.error(f"{ref}: No valid representative (alternative transcripts free) expression file produced in this run for merge.")
+						if RICH_AVAILABLE:
+							sys.stdout.write(f"{ref}: No valid representative (alternative transcripts free) expression file produced in this run for merge.\n")
+							sys.stdout.flush()
+				logger.info(f'Xpression_collector pipeline completed successfully for {ref}!!!')
+				if RICH_AVAILABLE:
+					sys.stdout.write(f"Xpression_collector pipeline completed successfully for {ref}!!!\n")
+					sys.stdout.flush()
+			except ValueError as e:
+				logger.error(f"Aborting merge for {ref}:\n{e}")
+				if RICH_AVAILABLE:
+					sys.stdout.write(f"Aborting merge for {ref}:\n{e}\n")
+					sys.stdout.flush()
 	if clean_up=='yes':
 		shutil.rmtree(tmpdir)
 
-if '--sra' in sys.argv and '--cds' in sys.argv and '--out' in sys.argv:
+if '--sra' in sys.argv and '--input_config' in sys.argv and '--out' in sys.argv:
 	main(sys.argv)
 else:
 	sys.exit(__usage__)
